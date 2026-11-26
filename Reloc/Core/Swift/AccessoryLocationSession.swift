@@ -159,15 +159,24 @@ public final class AccessoryLocationSession {
         stateLock.unlock()
     }
 
+    /// Cadence used for both the initial acquisition burst and post-lock hold.
+    /// `locationd` requests 250ms (`min_intervals_ms: 250`); dropping to the
+    /// user-configured 1.0s floor after confirmation let onboard GNSS updates
+    /// outpace the accessory stream on long-distance locks. Existing installs
+    /// may have `UserDefaults` `interval = 1.0` — this method must still
+    /// choose 0.25s. The send loop continues to clamp with `minIntervals[id]`,
+    /// so we never send faster than iOS allowed.
+    private static let lockHoldCadence: TimeInterval = 0.25
+
     private func effectiveInterval(base: TimeInterval, now: CFAbsoluteTime) -> TimeInterval {
+        // `base` and the burst deadline no longer change the interval: 4Hz
+        // must hold after confirmation and after the initial burst expires.
+        // The confirmed flag is still maintained for session observability.
         stateLock.lock()
-        let confirmed = coreLocationConfirmed
-        let burstDeadline = fastBurstUntil
+        _ = coreLocationConfirmed
         stateLock.unlock()
-        if !confirmed && now < burstDeadline {
-            return min(base, 0.25)
-        }
-        return base
+        _ = (base, now)
+        return Self.lockHoldCadence
     }
 
     /// Verifies device loopback connectivity and reads device identity (modeled on Reukix/retools).

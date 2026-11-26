@@ -20,16 +20,22 @@ public final class BackgroundKeepAlive: NSObject, CLLocationManagerDelegate {
     private var lastAuthStatus: CLAuthorizationStatus?
     /// Set when Location Services becomes denied/restricted; consumed by a real OFF→ON refresh.
     private var locationServicesWereDisabled = false
+    /// Timestamp for the start of the current denied/restricted period.
+    /// A sub-second flicker must not be treated as a user Location Services toggle.
+    private var locationServicesDisabledAt: Date?
     private var lastForceRefreshAt: Date?
     private let forceRefreshCooldown: TimeInterval = 2.0
+    /// Minimum time Location Services must stay off before a forceRestart is allowed.
+    private let sustainedLocationServicesOff: TimeInterval = 1.0
     public var onDiagnostic: ((String, [String: Any]) -> Void)?
 
     public override init() {
         super.init()
         locationManager.delegate = self
-        locationManager.desiredAccuracy = kCLLocationAccuracyBestForNavigation
-        locationManager.distanceFilter = kCLDistanceFilterNone
-        locationManager.activityType = .otherNavigation
+        // Keep-alive only needs an active CL consumer so locationd stays
+        // subscribed (0xFFFA). Navigation-grade accuracy wakes onboard GNSS
+        // and fights a long-distance accessory fix.
+        applyKeepAliveAccuracy()
         locationManager.pausesLocationUpdatesAutomatically = false
     }
 
@@ -132,6 +138,7 @@ public final class BackgroundKeepAlive: NSObject, CLLocationManagerDelegate {
         }
         lastForceRefreshAt = now
         locationServicesWereDisabled = false
+        locationServicesDisabledAt = nil
         renewBackgroundTask()
         startBackgroundLocation(forceRestart: true)
         if wantSilentAudio {
@@ -146,11 +153,30 @@ public final class BackgroundKeepAlive: NSObject, CLLocationManagerDelegate {
         guard isActive, locationSubscriptionActive else { return }
         let status = locationManager.authorizationStatus
         let authorized = status == .authorizedAlways || status == .authorizedWhenInUse
-        if locationServicesWereDisabled && authorized {
+        // Only rebuild the CL session after a *sustained* Location Services
+        // OFF→ON (the 一鍵 refresh). A routine 0xFFFC→0xFFFA, or a sub-second
+        // authorization flicker, must not forceRestart and emit keepalive_refreshed.
+        if authorized, didObserveSustainedLocationServicesOff {
             refreshAfterLocationToggle()
             return
         }
+        locationServicesWereDisabled = false
+        locationServicesDisabledAt = nil
         renewBackgroundTask()
+        emitStatus("keepalive_resume_noted")
+    }
+
+    private var didObserveSustainedLocationServicesOff: Bool {
+        guard locationServicesWereDisabled, let disabledAt = locationServicesDisabledAt else {
+            return false
+        }
+        return Date().timeIntervalSince(disabledAt) >= sustainedLocationServicesOff
+    }
+
+    private func applyKeepAliveAccuracy() {
+        locationManager.desiredAccuracy = kCLLocationAccuracyHundredMeters
+        locationManager.distanceFilter = kCLDistanceFilterNone
+        locationManager.activityType = .other
     }
 
     // MARK: - Background Location Keep-Alive
@@ -178,6 +204,7 @@ public final class BackgroundKeepAlive: NSObject, CLLocationManagerDelegate {
             locationManager.allowsBackgroundLocationUpdates = true
             locationManager.pausesLocationUpdatesAutomatically = false
             locationManager.showsBackgroundLocationIndicator = true
+            applyKeepAliveAccuracy()
             locationManager.startUpdatingLocation()
         }
     }
@@ -351,12 +378,23 @@ public final class BackgroundKeepAlive: NSObject, CLLocationManagerDelegate {
             let newStatus = manager.authorizationStatus
             if newStatus == .denied || newStatus == .restricted {
                 self.locationServicesWereDisabled = true
+                if self.locationServicesDisabledAt == nil {
+                    self.locationServicesDisabledAt = Date()
+                }
             }
             let recovered = (self.lastAuthStatus == .denied || self.lastAuthStatus == .restricted)
                 && (newStatus == .authorizedAlways || newStatus == .authorizedWhenInUse)
             self.lastAuthStatus = newStatus
-            if recovered {
+            if recovered, self.didObserveSustainedLocationServicesOff {
                 self.refreshAfterLocationToggle()
+            } else if recovered {
+                // Transient denied→authorized flicker: do not forceRestart.
+                self.locationServicesWereDisabled = false
+                self.locationServicesDisabledAt = nil
+                if self.locationSubscriptionActive {
+                    self.startBackgroundLocation(forceRestart: false)
+                }
+                self.emitStatus("keepalive_auth_recovered_skipped")
             } else if self.locationSubscriptionActive {
                 // Do not forceRestart here — a routine auth callback must not stop CoreLocation.
                 self.startBackgroundLocation(forceRestart: false)

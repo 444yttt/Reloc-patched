@@ -304,6 +304,7 @@ public final class RelocViewModel: ObservableObject {
         pendingLocation = nil
         isAccessoryLocationConfirmed = false
         session?.markCoreLocationConfirmed(false)
+        coreLocation.setAccuracyMode(.acquisition)
         session?.triggerFastBurst(seconds: 8.0)
         recordRecent(name: selectedPlaceName, subtitle: selectedPlaceAddress, location: targetLocation)
         persistRecoveryRecord()
@@ -828,6 +829,7 @@ public final class RelocViewModel: ObservableObject {
             guard !Task.isCancelled, let self, !self.snapshot.isRunning else { return }
 
             // Actively request fresh internal GNSS/Wi-Fi/Cell fix so `locationd` flushes the cached accessory fix.
+            self.coreLocation.setAccuracyMode(.realLocationRestore)
             self.coreLocation.requestAndStart()
             self.coreLocation.pulseForAccessoryLock()
             self.events.append(ProtocolEvent(
@@ -894,6 +896,7 @@ public final class RelocViewModel: ObservableObject {
                 headline: "③ このiPhone本来の位置情報を再取得しています…",
                 subtitle: "位置情報サービスを再びオンにしました。1〜2秒お待ちください"
             )
+            coreLocation.setAccuracyMode(.realLocationRestore)
             coreLocation.requestAndStart()
             coreLocation.pulseForAccessoryLock()
         }
@@ -969,9 +972,12 @@ public final class RelocViewModel: ObservableObject {
     private func handleSessionAuthenticated() {
         guard snapshot.isRunning else { return }
         resetAutoLockNudgeCount()
-        // Activate navigation-grade CoreLocation right AFTER iAP2 auth succeeds so `locationd`
-        // immediately pairs this fresh request with our authenticated external MFi GPS accessory.
+        // Activate a CoreLocation consumer right AFTER iAP2 auth succeeds so
+        // `locationd` pairs this request with the authenticated MFi accessory.
+        // Use acquisition accuracy (10m), not BestForNavigation, so we don't
+        // wake onboard GNSS while seeking the accessory lock.
         keepAlive.activateLocationSubscription(forceRestart: true)
+        coreLocation.setAccuracyMode(.acquisition)
         coreLocation.requestAndStart()
         updateInjectionPhase()
 
@@ -1029,6 +1035,7 @@ public final class RelocViewModel: ObservableObject {
     private func handleLocationStoppedBySystem() {
         isAccessoryLocationConfirmed = false
         session?.markCoreLocationConfirmed(false)
+        coreLocation.setAccuracyMode(.acquisition)
         updateInjectionPhase()
 
         // Debounce 0xFFFC by 0.9s so transient app-switch hiccups never falsely flash "5 秒"
@@ -1138,7 +1145,11 @@ public final class RelocViewModel: ObservableObject {
         let targetCL = CLLocation(latitude: targetLocation.latitude, longitude: targetLocation.longitude)
         let reportedCL = CLLocation(latitude: telemetry.latitude, longitude: telemetry.longitude)
         let distance = targetCL.distance(from: reportedCL)
-        let confirmed = (telemetry.isProducedByAccessory == true) && distance < 500.0
+        // Ignore stale CoreLocation samples (e.g. a cached accessory fix
+        // re-delivered immediately after 0xFFFC) so we don't re-confirm a lock
+        // that locationd has already abandoned.
+        let isFresh = abs(telemetry.timestamp.timeIntervalSinceNow) < 15.0
+        let confirmed = isFresh && (telemetry.isProducedByAccessory == true) && distance < 500.0
 
         if confirmed != isAccessoryLocationConfirmed {
             isAccessoryLocationConfirmed = confirmed
@@ -1150,6 +1161,7 @@ public final class RelocViewModel: ObservableObject {
                 lockWatchdogGeneration += 1
                 isLockWatchdogCycleActive = false
                 isPerformingAutoLockNudge = false
+                coreLocation.setAccuracyMode(.accessoryHold)
                 RelocTheme.hapticSuccess()
                 events.append(ProtocolEvent(
                     name: "accessory_location_confirmed",
@@ -1164,6 +1176,13 @@ public final class RelocViewModel: ObservableObject {
                         message: "「\(selectedPlaceName)」をロックしました。ほかのアプリに戻って使えます"
                     )
                 }
+            } else {
+                coreLocation.setAccuracyMode(.acquisition)
+                let isAccessory = telemetry.isProducedByAccessory == true
+                events.append(ProtocolEvent(
+                    name: "accessory_location_lost",
+                    detail: String(format: "{\"event\":\"accessory_location_lost\",\"distance_m\":%.1f,\"accuracy_m\":%.1f,\"is_accessory\":%@}", distance, telemetry.horizontalAccuracy, isAccessory ? "true" : "false")
+                ))
             }
             updateInjectionPhase()
         }
@@ -1210,6 +1229,7 @@ public final class RelocViewModel: ObservableObject {
         needsLocationServiceRefresh = false
         resetAutoLockNudgeCount()
         session?.triggerFastBurst(seconds: 15.0)
+        coreLocation.setAccuracyMode(.acquisition)
         keepAlive.pulseLocationSubscription()
         coreLocation.pulseForAccessoryLock()
         scheduleLockWatchdog()
