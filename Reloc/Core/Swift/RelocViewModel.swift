@@ -128,6 +128,13 @@ public final class RelocViewModel: ObservableObject {
     private var jitterTimer: Timer?
     private var subscriptionPulseTask: Task<Void, Never>?
     private var lockWatchdogTask: Task<Void, Never>?
+    /// True while a single lock-watchdog cycle (4.5s wait + optional nudge + 3.5s confirm) is in flight.
+    private var isLockWatchdogCycleActive = false
+    /// Set just before an auto_lock_nudge CoreLocation pulse so the resulting 0xFFFA does not reschedule the watchdog.
+    private var isPerformingAutoLockNudge = false
+    private var autoLockNudgeCount = 0
+    private var lockWatchdogGeneration = 0
+    private let maxAutoLockNudges = 2
     private var refreshCountdownTask: Task<Void, Never>?
     private var locationStopDebounceTask: Task<Void, Never>?
     private var locationRefreshSawDisabled = false
@@ -302,6 +309,7 @@ public final class RelocViewModel: ObservableObject {
         persistRecoveryRecord()
         if snapshot.isRunning {
             updateInjectionPhase()
+            resetAutoLockNudgeCount()
             scheduleLockWatchdog()
         }
     }
@@ -941,6 +949,9 @@ public final class RelocViewModel: ObservableObject {
         subscriptionPulseTask = nil
         lockWatchdogTask?.cancel()
         lockWatchdogTask = nil
+        lockWatchdogGeneration += 1
+        isLockWatchdogCycleActive = false
+        isPerformingAutoLockNudge = false
         refreshCountdownTask?.cancel()
         refreshCountdownTask = nil
         locationStopDebounceTask?.cancel()
@@ -948,8 +959,14 @@ public final class RelocViewModel: ObservableObject {
         locationRefreshSawDisabled = false
     }
 
+    private func resetAutoLockNudgeCount() {
+        autoLockNudgeCount = 0
+        isPerformingAutoLockNudge = false
+    }
+
     private func handleSessionAuthenticated() {
         guard snapshot.isRunning else { return }
+        resetAutoLockNudgeCount()
         // Activate navigation-grade CoreLocation right AFTER iAP2 auth succeeds so `locationd`
         // immediately pairs this fresh request with our authenticated external MFi GPS accessory.
         keepAlive.activateLocationSubscription(forceRestart: true)
@@ -994,6 +1011,16 @@ public final class RelocViewModel: ObservableObject {
             // Do not schedule CoreLocation pulses while the PiP refresh guide is active.
             return
         }
+        // A 0xFFFA caused by our own auto_lock_nudge pulse must not restart the 4.5s watchdog.
+        // Restarting cancels the post-nudge 3.5s confirmation window and loops forever:
+        // auto_lock_nudge -> 0xFFFC -> 0xFFFA -> scheduleLockWatchdog() -> auto_lock_nudge.
+        if isPerformingAutoLockNudge {
+            isPerformingAutoLockNudge = false
+            return
+        }
+        if isLockWatchdogCycleActive {
+            return
+        }
         scheduleLockWatchdog()
     }
 
@@ -1022,21 +1049,42 @@ public final class RelocViewModel: ObservableObject {
 
     private func scheduleLockWatchdog() {
         lockWatchdogTask?.cancel()
+        lockWatchdogGeneration += 1
+        let generation = lockWatchdogGeneration
+        isLockWatchdogCycleActive = true
+        isPerformingAutoLockNudge = false
         lockWatchdogTask = Task { @MainActor [weak self] in
+            defer {
+                guard let self, self.lockWatchdogGeneration == generation else { return }
+                self.isLockWatchdogCycleActive = false
+                self.isPerformingAutoLockNudge = false
+                self.lockWatchdogTask = nil
+            }
             try? await Task.sleep(nanoseconds: 4_500_000_000)
             guard !Task.isCancelled, let self, self.snapshot.isRunning else { return }
             if !self.isAccessoryLocationConfirmed {
-                // Silent automatic nudge before asking user to touch anything.
-                self.events.append(ProtocolEvent(
-                    name: "auto_lock_nudge",
-                    detail: "{\"event\":\"auto_lock_nudge\"}"
-                ))
-                self.session?.triggerFastBurst(seconds: 10.0)
-                self.keepAlive.pulseLocationSubscription()
-                self.coreLocation.pulseForAccessoryLock()
+                // Never stop/restart CoreLocation in the background: locationd may emit 0xFFFC
+                // and not return 0xFFFA until the app is foregrounded again.
+                let isAppActive = UIApplication.shared.applicationState == .active
+                if isAppActive, self.autoLockNudgeCount < self.maxAutoLockNudges {
+                    self.autoLockNudgeCount += 1
+                    self.isPerformingAutoLockNudge = true
+                    self.events.append(ProtocolEvent(
+                        name: "auto_lock_nudge",
+                        detail: "{\"event\":\"auto_lock_nudge\",\"attempt\":\(self.autoLockNudgeCount)}"
+                    ))
+                    self.session?.triggerFastBurst(seconds: 10.0)
+                    self.keepAlive.pulseLocationSubscription()
+                    self.coreLocation.pulseForAccessoryLock()
+                } else if !isAppActive {
+                    self.events.append(ProtocolEvent(
+                        name: "auto_lock_nudge_skipped_background",
+                        detail: "{\"event\":\"auto_lock_nudge_skipped_background\"}"
+                    ))
+                }
             }
             try? await Task.sleep(nanoseconds: 3_500_000_000)
-            guard !Task.isCancelled, self.snapshot.isRunning else { return }
+            guard !Task.isCancelled, let self, self.snapshot.isRunning else { return }
             if !self.isAccessoryLocationConfirmed {
                 self.needsLocationServiceRefresh = true
             }
@@ -1096,6 +1144,9 @@ public final class RelocViewModel: ObservableObject {
                 needsLocationServiceRefresh = false
                 lockWatchdogTask?.cancel()
                 lockWatchdogTask = nil
+                lockWatchdogGeneration += 1
+                isLockWatchdogCycleActive = false
+                isPerformingAutoLockNudge = false
                 RelocTheme.hapticSuccess()
                 events.append(ProtocolEvent(
                     name: "accessory_location_confirmed",
@@ -1154,6 +1205,7 @@ public final class RelocViewModel: ObservableObject {
     public func retryAutoLock() {
         guard snapshot.isRunning else { return }
         needsLocationServiceRefresh = false
+        resetAutoLockNudgeCount()
         session?.triggerFastBurst(seconds: 15.0)
         keepAlive.pulseLocationSubscription()
         coreLocation.pulseForAccessoryLock()

@@ -1,0 +1,81 @@
+name: Build unsigned IPA
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+# The vendored RelocDeviceBridge.xcframework is already in Vendor/.
+# Do not rebuild the Rust crate on CI. Never add, cache, or upload
+# Reloc/Resources/MFi/certificate.p7b or identity.pk8 — those credentials
+# must stay off GitHub; the unsigned IPA ships an empty MFi folder.
+jobs:
+  build:
+    runs-on: macos-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Guard against MFi credential leaks
+        run: |
+          set -euo pipefail
+          if git ls-files | grep -E '(^|/)(certificate\.p7b|identity\.pk8)$'; then
+            echo "Refusing to build: MFi credential files are tracked in git."
+            exit 1
+          fi
+          if find Reloc/Resources/MFi -type f \( -name 'certificate.p7b' -o -name 'identity.pk8' \) 2>/dev/null | grep -q .; then
+            echo "Refusing to build: MFi credential files are present in the workspace."
+            exit 1
+          fi
+          echo "MFi credential files are not present."
+
+      - name: Show Xcode version
+        run: xcodebuild -version
+
+      - name: Install XcodeGen
+        run: brew install xcodegen
+
+      - name: Generate Xcode project
+        run: xcodegen generate
+
+      - name: Build unsigned Release (iphoneos)
+        run: |
+          set -euo pipefail
+          xcodebuild build \
+            -project Reloc.xcodeproj \
+            -scheme Reloc \
+            -configuration Release \
+            -sdk iphoneos \
+            -destination 'generic/platform=iOS' \
+            -derivedDataPath build/DerivedData \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY="" \
+            DEVELOPMENT_TEAM=""
+
+      - name: Package unsigned IPA
+        run: |
+          set -euo pipefail
+          APP=$(find build/DerivedData/Build/Products/Release-iphoneos -name 'Reloc.app' -type d | head -n 1)
+          test -n "$APP"
+          test -d "$APP"
+          rm -rf build/Payload
+          mkdir -p build/Payload
+          cp -R "$APP" build/Payload/
+          # Confirm MFi credentials were not bundled
+          if find build/Payload -type f \( -name 'certificate.p7b' -o -name 'identity.pk8' \) | grep -q .; then
+            echo "Refusing to upload: unsigned IPA unexpectedly contains MFi credentials."
+            exit 1
+          fi
+          (cd build && zip -qry Reloc-unsigned.ipa Payload)
+          ls -la build/Reloc-unsigned.ipa
+          shasum -a 256 build/Reloc-unsigned.ipa
+
+      - name: Upload unsigned IPA
+        uses: actions/upload-artifact@v4
+        with:
+          name: Reloc-unsigned
+          path: build/Reloc-unsigned.ipa
+          if-no-files-found: error
+          retention-days: 7
