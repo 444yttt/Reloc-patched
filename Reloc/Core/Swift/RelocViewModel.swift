@@ -1055,10 +1055,11 @@ public final class RelocViewModel: ObservableObject {
         isPerformingAutoLockNudge = false
         lockWatchdogTask = Task { @MainActor [weak self] in
             defer {
-                guard let self, self.lockWatchdogGeneration == generation else { return }
-                self.isLockWatchdogCycleActive = false
-                self.isPerformingAutoLockNudge = false
-                self.lockWatchdogTask = nil
+                if let self, self.lockWatchdogGeneration == generation {
+                    self.isLockWatchdogCycleActive = false
+                    self.isPerformingAutoLockNudge = false
+                    self.lockWatchdogTask = nil
+                }
             }
             try? await Task.sleep(nanoseconds: 4_500_000_000)
             guard !Task.isCancelled, let self, self.snapshot.isRunning else { return }
@@ -1084,7 +1085,7 @@ public final class RelocViewModel: ObservableObject {
                 }
             }
             try? await Task.sleep(nanoseconds: 3_500_000_000)
-            guard !Task.isCancelled, let self, self.snapshot.isRunning else { return }
+            guard !Task.isCancelled, self.snapshot.isRunning else { return }
             if !self.isAccessoryLocationConfirmed {
                 self.needsLocationServiceRefresh = true
             }
