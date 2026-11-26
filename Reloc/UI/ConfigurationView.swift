@@ -212,7 +212,7 @@ struct ConfigurationView: View {
                     }
                 }
 
-                Section("地图与外观") {
+                Section {
                     Picker(selection: $viewModel.appearanceMode) {
                         ForEach(AppAppearanceMode.allCases) { m in
                             Text(m.title).tag(m)
@@ -225,17 +225,35 @@ struct ConfigurationView: View {
                         }
                     }
 
-                    Picker(selection: $viewModel.mapStyle) {
-                        ForEach(MapDisplayStyle.allCases) { s in
-                            Text(s.title).tag(s)
+                    Picker(selection: $viewModel.mapSource) {
+                        ForEach(MapSource.allCases) { src in
+                            Text(src.title).tag(src)
                         }
                     } label: {
                         Label {
-                            Text("默认地图样式")
+                            Text("地图数据源")
                         } icon: {
-                            SettingsIconBadge(systemName: "map.fill", color: RelocTheme.accent)
+                            SettingsIconBadge(systemName: "globe.americas.fill", color: RelocTheme.accent)
                         }
                     }
+
+                    if viewModel.mapSource == .appleNative {
+                        Picker(selection: $viewModel.mapStyle) {
+                            ForEach(MapDisplayStyle.allCases) { s in
+                                Text(s.title).tag(s)
+                            }
+                        } label: {
+                            Label {
+                                Text("Apple 地图样式")
+                            } icon: {
+                                SettingsIconBadge(systemName: "map.fill", color: RelocTheme.accent)
+                            }
+                        }
+                    }
+                } header: {
+                    Text("地图与外观")
+                } footer: {
+                    Text("默认使用 Apple 系统地图（MapKit 原生）；如需无高德字样的纯国际 WGS-84 底图，可切换为全球街道图、OpenStreetMap 或全球卫星图。")
                 }
             }
             .navigationTitle("设备配对与连接")
@@ -252,13 +270,17 @@ struct ConfigurationView: View {
                     }
                 }
             }
-            .fileImporter(
-                isPresented: $showImporter,
-                allowedContentTypes: [.data, .propertyList, .xml, .item],
-                allowsMultipleSelection: false
-            ) { result in
-                guard case .success(let urls) = result, let url = urls.first else { return }
-                viewModel.importPairingFile(url: url)
+            .sheet(isPresented: $showImporter) {
+                PairingDocumentPicker(
+                    onPick: { url in
+                        showImporter = false
+                        viewModel.importPairingFile(url: url)
+                    },
+                    onCancel: {
+                        showImporter = false
+                    }
+                )
+                .ignoresSafeArea()
             }
         }
     }
@@ -443,5 +465,49 @@ private struct MetricTile: View {
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(9)
         .background(Color.secondary.opacity(0.08), in: RoundedRectangle(cornerRadius: 11, style: .continuous))
+    }
+}
+
+/// Native UIDocumentPicker wrapper using `forOpeningContentTypes: [.item], asCopy: true`
+/// so custom extensions (`.rppairing`, `.mobiledevicepairing`, `.mobilepair`, `.plist`, or
+/// extensionless files) from Files / Downloads / iCloud / WeChat are never greyed out.
+private struct PairingDocumentPicker: UIViewControllerRepresentable {
+    let onPick: (URL) -> Void
+    let onCancel: () -> Void
+
+    func makeCoordinator() -> Coordinator {
+        Coordinator(onPick: onPick, onCancel: onCancel)
+    }
+
+    func makeUIViewController(context: Context) -> UIDocumentPickerViewController {
+        let picker = UIDocumentPickerViewController(forOpeningContentTypes: [.item], asCopy: true)
+        picker.allowsMultipleSelection = false
+        picker.shouldShowFileExtensions = true
+        picker.delegate = context.coordinator
+        return picker
+    }
+
+    func updateUIViewController(_ uiViewController: UIDocumentPickerViewController, context: Context) {}
+
+    final class Coordinator: NSObject, UIDocumentPickerDelegate {
+        let onPick: (URL) -> Void
+        let onCancel: () -> Void
+
+        init(onPick: @escaping (URL) -> Void, onCancel: @escaping () -> Void) {
+            self.onPick = onPick
+            self.onCancel = onCancel
+        }
+
+        func documentPicker(_ controller: UIDocumentPickerViewController, didPickDocumentsAt urls: [URL]) {
+            if let url = urls.first {
+                onPick(url)
+            } else {
+                onCancel()
+            }
+        }
+
+        func documentPickerWasCancelled(_ controller: UIDocumentPickerViewController) {
+            onCancel()
+        }
     }
 }

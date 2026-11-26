@@ -110,6 +110,34 @@ public enum NMEAGenerator {
         return [1: gga, 2: rmc]
     }
 
+    /// Generates standard NMEA-0183 void/invalid-fix sentences (GGA quality=0, RMC status=V)
+    /// sent right before tearing down the iAP2 link so `locationd` immediately drops the
+    /// external accessory fix and falls back to internal GNSS/Wi-Fi/Cellular positioning.
+    public static func voidLocationSentences(at date: Date = Date()) -> [UInt16: String] {
+        var utcCal = Calendar(identifier: .gregorian)
+        utcCal.timeZone = TimeZone(secondsFromGMT: 0)!
+        let comps = utcCal.dateComponents([.hour, .minute, .second, .nanosecond, .day, .month, .year], from: date)
+
+        let centiseconds = min(99, max(0, (comps.nanosecond ?? 0) / 10_000_000))
+        let clock = String(
+            format: "%02d%02d%02d.%02d",
+            comps.hour ?? 0,
+            comps.minute ?? 0,
+            comps.second ?? 0,
+            centiseconds
+        )
+        let ddmmyy = String(
+            format: "%02d%02d%02d",
+            comps.day ?? 1,
+            comps.month ?? 1,
+            (comps.year ?? 2026) % 100
+        )
+
+        let gga = sentence(body: "GPGGA,\(clock),0000.0000,N,00000.0000,E,0,00,99.9,0.0,M,0.0,M,,")
+        let rmc = sentence(body: "GPRMC,\(clock),V,,,,,0.0,0.0,\(ddmmyy),,,N")
+        return [1: gga, 2: rmc]
+    }
+
     /// Encodes `0xFFFB` LocationInformation with each NMEA sentence as parameter 0.
     public static func locationMessage(sentences: [String]) throws -> RLIAP2Message {
         var body = Data()

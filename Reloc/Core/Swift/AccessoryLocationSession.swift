@@ -115,22 +115,59 @@ public final class AccessoryLocationSession {
     private var activeLockdown: RLLockdownClient?
     private var activeTunnelHandle: UInt64 = 0
     private var activeLink: IAP2Link?
+    private var coreLocationConfirmed = false
+    private var fastBurstUntil: CFAbsoluteTime = 0
 
     public let locationBox: LiveLocationBox
     private let onEvent: EventCallback
     private let onSnapshot: SnapshotCallback
+    private let onAuthenticated: (@Sendable () -> Void)?
+    private let onLocationRequested: (@Sendable () -> Void)?
+    private let onLocationStopped: (@Sendable () -> Void)?
     private let onSubscriptionRestarted: (@Sendable () -> Void)?
 
     public init(
         initialLocation: TargetLocation,
         onEvent: @escaping EventCallback,
         onSnapshot: @escaping SnapshotCallback,
+        onAuthenticated: (@Sendable () -> Void)? = nil,
+        onLocationRequested: (@Sendable () -> Void)? = nil,
+        onLocationStopped: (@Sendable () -> Void)? = nil,
         onSubscriptionRestarted: (@Sendable () -> Void)? = nil
     ) {
         self.locationBox = LiveLocationBox(initialLocation)
         self.onEvent = onEvent
         self.onSnapshot = onSnapshot
+        self.onAuthenticated = onAuthenticated
+        self.onLocationRequested = onLocationRequested
+        self.onLocationStopped = onLocationStopped
         self.onSubscriptionRestarted = onSubscriptionRestarted
+    }
+
+    /// Updates whether iOS CoreLocation has confirmed `isProducedByAccessory == true` for the target.
+    public func markCoreLocationConfirmed(_ confirmed: Bool) {
+        stateLock.lock()
+        coreLocationConfirmed = confirmed
+        stateLock.unlock()
+    }
+
+    /// Requests a temporary high-cadence NMEA acquisition burst (respecting iOS `minIntervals`)
+    /// so `locationd` locks onto the external accessory GPS as rapidly as possible.
+    public func triggerFastBurst(seconds: TimeInterval = 15.0) {
+        stateLock.lock()
+        fastBurstUntil = max(fastBurstUntil, CFAbsoluteTimeGetCurrent() + seconds)
+        stateLock.unlock()
+    }
+
+    private func effectiveInterval(base: TimeInterval, now: CFAbsoluteTime) -> TimeInterval {
+        stateLock.lock()
+        let confirmed = coreLocationConfirmed
+        let burstDeadline = fastBurstUntil
+        stateLock.unlock()
+        if !confirmed && now < burstDeadline {
+            return min(base, 0.25)
+        }
+        return base
     }
 
     /// Verifies device loopback connectivity and reads device identity (modeled on Reukix/retools).
@@ -257,6 +294,24 @@ public final class AccessoryLocationSession {
     public func stop() {
         stateLock.lock()
         cancelled = true
+        let hasActiveLink = (activeLink != nil)
+        stateLock.unlock()
+
+        if !hasActiveLink {
+            forceCloseActiveTransports()
+            return
+        }
+
+        // Give `runOnSocket` up to 0.9s to flush Void NMEA (GGA quality=0 / RMC status=V)
+        // and an iAP2 RST control packet so iOS immediately detaches the external GPS accessory,
+        // then force-close as a failsafe if the transport is wedged.
+        DispatchQueue.global(qos: .userInitiated).asyncAfter(deadline: .now() + 0.9) { [weak self] in
+            self?.forceCloseActiveTransports()
+        }
+    }
+
+    private func forceCloseActiveTransports() {
+        stateLock.lock()
         let link = activeLink
         let lockdown = activeLockdown
         let tunnelHandle = activeTunnelHandle
@@ -724,16 +779,17 @@ public final class AccessoryLocationSession {
                     break
                 }
 
-                var pollSlice: TimeInterval = 0.25
+                var pollSlice: TimeInterval = 0.15
                 if configuration.mode == .send,
                    snapshot.identified,
                    snapshot.authenticated,
                    !activeSentences.isEmpty {
+                    let desiredInterval = effectiveInterval(base: configuration.intervalSeconds, now: now)
                     let nextDue = activeSentences.map { id -> CFAbsoluteTime in
                         let last = lastSent[id] ?? -.infinity
-                        let required = max(configuration.intervalSeconds, minIntervals[id] ?? 0.25)
+                        let required = max(desiredInterval, minIntervals[id] ?? 0.25)
                         return last.isFinite ? (last + required) : now
-                    }.min() ?? (now + 0.25)
+                    }.min() ?? (now + 0.15)
                     pollSlice = min(pollSlice, max(0.01, nextDue - now))
                 }
                 if let deadline {
@@ -779,6 +835,7 @@ public final class AccessoryLocationSession {
                         snapshot.lastError = nil
                         onSnapshot(snapshot)
                         emitEvent("authentication_succeeded")
+                        onAuthenticated?()
 
                     case 0xAA04: // AuthenticationFailed
                         throw IAP2LinkError.protocolError("Accessory authentication failed (0xAA04)")
@@ -801,12 +858,14 @@ public final class AccessoryLocationSession {
                             minIntervalsMsLog["\(sid)"] = Int(ms)
                         }
                         lastSent.removeAll()
+                        triggerFastBurst(seconds: 15.0)
                         snapshot.activeSentences = activeSentences.sorted()
                         onSnapshot(snapshot)
                         emitEvent("location_requested", details: [
                             "sentences": snapshot.activeSentences.map(Int.init),
                             "min_intervals_ms": minIntervalsMsLog,
                         ])
+                        onLocationRequested?()
                         if sawLocationStopped {
                             sawLocationStopped = false
                             onSubscriptionRestarted?()
@@ -818,6 +877,7 @@ public final class AccessoryLocationSession {
                         snapshot.activeSentences = []
                         onSnapshot(snapshot)
                         emitEvent("location_stopped")
+                        onLocationStopped?()
 
                     default:
                         break
@@ -831,9 +891,10 @@ public final class AccessoryLocationSession {
                    !isCancelled() {
                     let tickNow = CFAbsoluteTimeGetCurrent()
                     let target = locationBox.get()
+                    let desiredInterval = effectiveInterval(base: configuration.intervalSeconds, now: tickNow)
                     let due = activeSentences.sorted().filter { id in
                         let last = lastSent[id] ?? -.infinity
-                        let required = max(configuration.intervalSeconds, minIntervals[id] ?? 0.25)
+                        let required = max(desiredInterval, minIntervals[id] ?? 0.25)
                         return tickNow - last >= required
                     }
                     if !due.isEmpty {
@@ -858,6 +919,22 @@ public final class AccessoryLocationSession {
                         }
                     }
                 }
+            }
+
+            if isCancelled() && snapshot.authenticated {
+                // Gracefully invalidate the external GNSS fix (GGA quality=0 / RMC status=V)
+                // and send an iAP2 RST so `locationd` immediately drops the accessory source.
+                if !activeSentences.isEmpty {
+                    let voidMap = NMEAGenerator.voidLocationSentences()
+                    let voidOutgoing = activeSentences.sorted().compactMap { voidMap[$0] }
+                    if !voidOutgoing.isEmpty, let voidMsg = try? NMEAGenerator.locationMessage(sentences: voidOutgoing) {
+                        try? link.send(voidMsg)
+                        emitEvent("location_void_sent", details: ["sentences": activeSentences.sorted().map(Int.init)])
+                    }
+                }
+                link.sendReset()
+                emitEvent("iap2_link_reset_sent")
+                Thread.sleep(forTimeInterval: 0.08)
             }
 
             emitEvent("finished", details: [

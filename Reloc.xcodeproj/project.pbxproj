@@ -32,6 +32,7 @@
 		C7C20C2562D2ECA1CB57F2ED /* CredentialStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = C228CB38BBF6624A23FCE122 /* CredentialStore.swift */; };
 		C990475061016016AFCA8527 /* RelocDeviceBridge.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = 4DE600F9D90E3DE26DEE5AB3 /* RelocDeviceBridge.xcframework */; };
 		CB5CDD966D6CBD41B143BB84 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 5E174E4E40873ACEF78744DF /* Assets.xcassets */; };
+		D90B08DE6CBDAB0F522476F8 /* WebMercatorMapView.swift in Sources */ = {isa = PBXBuildFile; fileRef = C3BA8E218C73FE7D2B1330A4 /* WebMercatorMapView.swift */; };
 		DDA9CFE9E6AF51E910B496FD /* RemotePairingDiscovery.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5122C6F7230EAC189001508F /* RemotePairingDiscovery.swift */; };
 		EB09B8A6EE1013A84AFD60D6 /* LiveCoreLocationMonitor.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8D0C87683C6D8173DE104180 /* LiveCoreLocationMonitor.swift */; };
 		ED6AE5132CEA42E9EA185A91 /* ProtocolLogsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9AF6E059385E81D275048E16 /* ProtocolLogsView.swift */; };
@@ -67,6 +68,7 @@
 		B19B347CA915F422330D5837 /* RLASN1DER.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = RLASN1DER.h; sourceTree = "<group>"; };
 		B754D1F8BA54B55F5940CBB9 /* Reloc-Bridging-Header.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = "Reloc-Bridging-Header.h"; sourceTree = "<group>"; };
 		C228CB38BBF6624A23FCE122 /* CredentialStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CredentialStore.swift; sourceTree = "<group>"; };
+		C3BA8E218C73FE7D2B1330A4 /* WebMercatorMapView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WebMercatorMapView.swift; sourceTree = "<group>"; };
 		C751B0BF43B4E657F9BF9E33 /* PairingPiPPresenter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PairingPiPPresenter.swift; sourceTree = "<group>"; };
 		CB14CC02951EAC5F9F696222 /* IAP2Link.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = IAP2Link.swift; sourceTree = "<group>"; };
 		D91B6530ED10700ADF3B10F5 /* RelocViewModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RelocViewModel.swift; sourceTree = "<group>"; };
@@ -192,6 +194,7 @@
 				9AF6E059385E81D275048E16 /* ProtocolLogsView.swift */,
 				107C87E85734440925389836 /* RelocApp.swift */,
 				0039FDF8415F28A276A9FC30 /* RelocTheme.swift */,
+				C3BA8E218C73FE7D2B1330A4 /* WebMercatorMapView.swift */,
 			);
 			name = UI;
 			path = Reloc/UI;
@@ -290,6 +293,7 @@
 				7A7E15A0295ABAF77EB98636 /* RelocTheme.swift in Sources */,
 				0F56C155BC682C7AEDE21302 /* RelocViewModel.swift in Sources */,
 				DDA9CFE9E6AF51E910B496FD /* RemotePairingDiscovery.swift in Sources */,
+				D90B08DE6CBDAB0F522476F8 /* WebMercatorMapView.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

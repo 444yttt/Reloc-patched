@@ -39,6 +39,19 @@ public final class IAP2Link {
         socket.close()
     }
 
+    /// Sends an iAP2 Link Reset (`RST`) control packet so iOS `iap2d` / `com.apple.carkit.service`
+    /// detaches the external GPS accessory immediately instead of waiting for TCP keepalive timeout.
+    public func sendReset() {
+        let rst = RLIAP2Packet(
+            flags: RLIAP2LinkFlags.RST.rawValue,
+            sequence: sequence,
+            acknowledgement: peerSequence,
+            session: 0,
+            payload: nil
+        )
+        try? socket.write(rst.encode(), timeout: 0.35)
+    }
+
     private func readPacket(timeout: TimeInterval) throws -> RLIAP2Packet? {
         let deadline = CFAbsoluteTimeGetCurrent() + max(timeout, 0.001)
 

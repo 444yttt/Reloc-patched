@@ -4,6 +4,8 @@ import SwiftUI
 
 struct MapPickerView: View {
     @ObservedObject var viewModel: RelocViewModel
+    @ObservedObject private var coreLocation: LiveCoreLocationMonitor
+    @Environment(\.colorScheme) private var colorScheme
     let switchToConfig: () -> Void
 
     @State private var searchText = ""
@@ -15,20 +17,43 @@ struct MapPickerView: View {
     @State private var showStopConfirm = false
     @State private var copiedAddressToast = false
 
+    init(viewModel: RelocViewModel, switchToConfig: @escaping () -> Void) {
+        self.viewModel = viewModel
+        self._coreLocation = ObservedObject(wrappedValue: viewModel.coreLocation)
+        self.switchToConfig = switchToConfig
+    }
+
     var body: some View {
         ZStack(alignment: .top) {
-            InteractiveMKMapView(
-                activeCoordinate: viewModel.activeMapCoordinate,
-                isSessionRunning: viewModel.snapshot.isRunning,
-                pendingCoordinate: viewModel.pendingMapCoordinate,
-                mapStyle: viewModel.mapStyle,
-                cameraTarget: $cameraTarget,
-                onTapCoordinate: { coord in
-                    RelocTheme.hapticLight()
-                    viewModel.selectLocationFromMap(coord)
-                }
-            )
-            .ignoresSafeArea()
+            if viewModel.mapSource.isPureWGS84 {
+                WebMercatorMapView(
+                    activeCoordinate: viewModel.activeMapCoordinate,
+                    isSessionRunning: viewModel.snapshot.isRunning,
+                    pendingCoordinate: viewModel.pendingMapCoordinate,
+                    mapSource: viewModel.mapSource,
+                    cameraTarget: $cameraTarget,
+                    onTapCoordinate: { coord in
+                        RelocTheme.hapticLight()
+                        viewModel.selectLocationFromMap(coord)
+                    }
+                )
+                .ignoresSafeArea()
+            } else {
+                InteractiveMKMapView(
+                    activeCoordinate: viewModel.activeMapCoordinate,
+                    isSessionRunning: viewModel.snapshot.isRunning,
+                    pendingCoordinate: viewModel.pendingMapCoordinate,
+                    mapSource: viewModel.mapSource,
+                    mapStyle: viewModel.mapStyle,
+                    isDarkMode: colorScheme == .dark,
+                    cameraTarget: $cameraTarget,
+                    onTapCoordinate: { coord in
+                        RelocTheme.hapticLight()
+                        viewModel.selectLocationFromMap(coord)
+                    }
+                )
+                .ignoresSafeArea()
+            }
 
             VStack(spacing: 10) {
                 searchBar
@@ -171,12 +196,23 @@ struct MapPickerView: View {
             }
 
             Menu {
-                Section("地图样式") {
-                    ForEach(MapDisplayStyle.allCases) { style in
+                Section("地图数据源") {
+                    ForEach(MapSource.allCases) { source in
                         Button {
-                            viewModel.mapStyle = style
+                            viewModel.mapSource = source
                         } label: {
-                            Label(style.title, systemImage: viewModel.mapStyle == style ? "checkmark" : "map")
+                            Label(source.shortTitle, systemImage: viewModel.mapSource == source ? "checkmark" : "globe")
+                        }
+                    }
+                }
+                if viewModel.mapSource == .appleNative {
+                    Section("Apple 地图样式") {
+                        ForEach(MapDisplayStyle.allCases) { style in
+                            Button {
+                                viewModel.mapStyle = style
+                            } label: {
+                                Label(style.title, systemImage: viewModel.mapStyle == style ? "checkmark" : "map")
+                            }
                         }
                     }
                 }
@@ -207,25 +243,35 @@ struct MapPickerView: View {
     }
 
     private var statusDotColor: Color {
-        if viewModel.snapshot.isRunning {
-            return viewModel.snapshot.packetsAcknowledged > 0 ? RelocTheme.emerald : RelocTheme.accent
+        switch viewModel.injectionPhase {
+        case .activeConfirmed:
+            return RelocTheme.emerald
+        case .injectingPendingLock, .waitingSubscription:
+            return viewModel.needsLocationServiceRefresh ? RelocTheme.amber : RelocTheme.accent
+        case .connecting:
+            return RelocTheme.amber
+        case .idle:
+            if viewModel.connectionVerified { return RelocTheme.emerald }
+            return viewModel.pairingStatus.isLoaded ? RelocTheme.accent : RelocTheme.crimson
         }
-        if viewModel.connectionVerified { return RelocTheme.emerald }
-        return viewModel.pairingStatus.isLoaded ? RelocTheme.amber : RelocTheme.crimson
     }
 
     private var statusPillTitle: String {
-        if viewModel.snapshot.isRunning {
-            if viewModel.snapshot.packetsAcknowledged > 0 {
-                return "定位注入中 · ACK \(viewModel.snapshot.packetsAcknowledged)"
-            }
-            if viewModel.snapshot.authenticated {
-                return "已认证 · 等待订阅"
-            }
-            return "建立连接中…"
+        switch viewModel.injectionPhase {
+        case .activeConfirmed:
+            return "外设定位已生效 ✓"
+        case .injectingPendingLock:
+            return viewModel.needsLocationServiceRefresh
+                ? "待刷新生效 · ACK \(viewModel.snapshot.packetsAcknowledged)"
+                : "切换定位中 · ACK \(viewModel.snapshot.packetsAcknowledged)"
+        case .waitingSubscription:
+            return "已鉴权 · 唤醒订阅中…"
+        case .connecting:
+            return "建立回环连接中…"
+        case .idle:
+            if viewModel.connectionVerified { return "回环已就绪" }
+            return viewModel.pairingStatus.isLoaded ? "已配对 · 可一键定位" : "未配对设备"
         }
-        if viewModel.connectionVerified { return "回环已就绪" }
-        return viewModel.pairingStatus.isLoaded ? "已配对 · 待验证" : "未配对设备"
     }
 
     private var searchResultsList: some View {
@@ -235,8 +281,8 @@ struct MapPickerView: View {
                     Button {
                         RelocTheme.hapticLight()
                         let coord = item.placemark.coordinate
-                        viewModel.selectLocationFromMap(coord, name: item.name, address: item.placemark.title)
-                        cameraTarget = coord
+                        viewModel.selectSearchResultCoordinate(coord, name: item.name, address: item.placemark.title)
+                        cameraTarget = viewModel.pendingMapCoordinate ?? viewModel.activeMapCoordinate
                         searchResults = []
                         searchText = ""
                     } label: {
@@ -393,16 +439,37 @@ struct MapPickerView: View {
                     .background(RelocTheme.amber.opacity(0.14), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
                 }
                 .foregroundStyle(.primary)
-            } else if viewModel.snapshot.isRunning && viewModel.snapshot.authenticated && viewModel.snapshot.activeSentences.isEmpty {
-                HStack(spacing: 7) {
-                    Image(systemName: "info.circle.fill").foregroundStyle(RelocTheme.accent)
-                    Text("已连接就绪，打开「地图」即可触发订阅；若位置未立刻切换，关闭定位服务约 5 秒再打开。")
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
+            } else if coreLocation.authorizationStatus == .denied || coreLocation.authorizationStatus == .restricted {
+                HStack(spacing: 8) {
+                    Image(systemName: "location.slash.fill").foregroundStyle(RelocTheme.crimson)
+                    Text("未开启定位权限，无法自动触发外设订阅").font(.caption.weight(.semibold))
+                    Spacer()
+                    Button("去开启") {
+                        viewModel.openAppSettings()
+                    }
+                    .font(.caption.weight(.bold))
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 5)
+                    .background(RelocTheme.crimson, in: Capsule())
+                    .foregroundStyle(.white)
                 }
-                .padding(9)
-                .background(RelocTheme.accent.opacity(0.10), in: RoundedRectangle(cornerRadius: 11, style: .continuous))
-            } else if let err = viewModel.snapshot.lastError, !viewModel.snapshot.isRunning {
+                .padding(10)
+                .background(RelocTheme.crimson.opacity(0.12), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+            } else if viewModel.snapshot.isRunning {
+                liveTriggerStatusBanner
+            } else if viewModel.isRestoringRealLocation {
+                restoreLocationStatusBanner
+            } else if viewModel.realLocationRestoredNotice {
+                HStack(spacing: 8) {
+                    Image(systemName: "checkmark.circle.fill").foregroundStyle(RelocTheme.emerald)
+                    Text("已恢复本机真实 GPS 定位")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(RelocTheme.emerald)
+                    Spacer()
+                }
+                .padding(10)
+                .background(RelocTheme.emerald.opacity(0.12), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+            } else if let err = viewModel.snapshot.lastError {
                 Text("上次错误：\(err)")
                     .font(.caption)
                     .foregroundStyle(RelocTheme.crimson)
@@ -442,6 +509,139 @@ struct MapPickerView: View {
         .relocGlassCard(cornerRadius: 24, padding: 15)
     }
 
+    @ViewBuilder
+    private var restoreLocationStatusBanner: some View {
+        if viewModel.needsRestoreLocationRefresh {
+            VStack(alignment: .leading, spacing: 8) {
+                HStack(spacing: 7) {
+                    Image(systemName: "arrow.triangle.2.circlepath.circle.fill").foregroundStyle(RelocTheme.amber)
+                    Text("外设连接已断开，但系统仍在缓存上次定位（室内弱信号常见）。点击下方一键刷新定位服务即可立即恢复真实位置。")
+                        .font(.caption2)
+                        .foregroundStyle(.primary)
+                }
+                Button {
+                    RelocTheme.hapticMedium()
+                    viewModel.launchOneTapRestoreRefresh()
+                } label: {
+                    Label("一键刷新定位服务（恢复真实位置）", systemImage: "pip.enter")
+                        .font(.caption.weight(.bold))
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 8)
+                        .background(RelocTheme.amber, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+                        .foregroundStyle(.white)
+                }
+            }
+            .padding(10)
+            .background(RelocTheme.amber.opacity(0.12), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+        } else {
+            HStack(spacing: 8) {
+                ProgressView().controlSize(.small)
+                Text("已发送断开与失效报文，正在唤醒本机真实 GPS 恢复定位…")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                Spacer()
+                Button("立即刷新") {
+                    RelocTheme.hapticLight()
+                    viewModel.launchOneTapRestoreRefresh()
+                }
+                .font(.caption2.weight(.bold))
+                .padding(.horizontal, 8)
+                .padding(.vertical, 4)
+                .background(RelocTheme.accent.opacity(0.14), in: Capsule())
+                .foregroundStyle(RelocTheme.accent)
+            }
+            .padding(9)
+            .background(RelocTheme.accent.opacity(0.10), in: RoundedRectangle(cornerRadius: 11, style: .continuous))
+        }
+    }
+
+    @ViewBuilder
+    private var liveTriggerStatusBanner: some View {
+        switch viewModel.injectionPhase {
+        case .activeConfirmed:
+            HStack(spacing: 8) {
+                Image(systemName: "checkmark.seal.fill")
+                    .foregroundStyle(RelocTheme.emerald)
+                VStack(alignment: .leading, spacing: 1) {
+                    Text("外设 GPS 已 100% 生效")
+                        .font(.caption.weight(.bold))
+                        .foregroundStyle(RelocTheme.emerald)
+                    Text("系统已确认外设来源（isProducedByAccessory = true），可直接切去任意 App")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                }
+                Spacer()
+            }
+            .padding(10)
+            .background(RelocTheme.emerald.opacity(0.12), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+
+        case .injectingPendingLock where viewModel.needsLocationServiceRefresh:
+            VStack(alignment: .leading, spacing: 8) {
+                HStack(spacing: 7) {
+                    Image(systemName: "bolt.circle.fill").foregroundStyle(RelocTheme.amber)
+                    Text("NMEA 已连通，但系统仍在沿用本机缓存定位。点击下方一键刷新（含悬浮 5 秒倒计时）即可 100% 强制切换。")
+                        .font(.caption2)
+                        .foregroundStyle(.primary)
+                }
+                HStack(spacing: 8) {
+                    Button {
+                        RelocTheme.hapticMedium()
+                        viewModel.launchOneTapLocationRefresh()
+                    } label: {
+                        Label("一键刷新定位服务（浮窗指引）", systemImage: "pip.enter")
+                            .font(.caption.weight(.bold))
+                            .frame(maxWidth: .infinity)
+                            .padding(.vertical, 8)
+                            .background(RelocTheme.amber, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+                            .foregroundStyle(.white)
+                    }
+                    Button {
+                        RelocTheme.hapticLight()
+                        viewModel.retryAutoLock()
+                    } label: {
+                        Text("重试")
+                            .font(.caption.weight(.semibold))
+                            .padding(.horizontal, 12)
+                            .padding(.vertical, 8)
+                            .background(Color.secondary.opacity(0.14), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+                            .foregroundStyle(.primary)
+                    }
+                }
+            }
+            .padding(10)
+            .background(RelocTheme.amber.opacity(0.12), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+
+        default:
+            HStack(spacing: 8) {
+                ProgressView().controlSize(.small)
+                Text(
+                    viewModel.injectionPhase == .connecting
+                        ? "正在连接设备回环并完成 MFi 鉴权…"
+                        : (viewModel.injectionPhase == .waitingSubscription
+                            ? "鉴权成功，正在自动唤醒系统外设 GPS 订阅…"
+                            : "正在高速注入 NMEA 坐标，等待系统锁定外设源…")
+                )
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+                Spacer()
+                if viewModel.snapshot.authenticated {
+                    Button("强制刷新") {
+                        RelocTheme.hapticLight()
+                        viewModel.launchOneTapLocationRefresh()
+                    }
+                    .font(.caption2.weight(.bold))
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 4)
+                    .background(RelocTheme.accent.opacity(0.14), in: Capsule())
+                    .foregroundStyle(RelocTheme.accent)
+                }
+            }
+            .padding(9)
+            .background(RelocTheme.accent.opacity(0.10), in: RoundedRectangle(cornerRadius: 11, style: .continuous))
+        }
+    }
+
     // MARK: - Search Action
 
     private func performSearch() {
@@ -477,7 +677,9 @@ private struct InteractiveMKMapView: UIViewRepresentable {
     let activeCoordinate: CLLocationCoordinate2D
     let isSessionRunning: Bool
     let pendingCoordinate: CLLocationCoordinate2D?
+    let mapSource: MapSource
     let mapStyle: MapDisplayStyle
+    let isDarkMode: Bool
     @Binding var cameraTarget: CLLocationCoordinate2D?
     let onTapCoordinate: (CLLocationCoordinate2D) -> Void
 
@@ -485,14 +687,16 @@ private struct InteractiveMKMapView: UIViewRepresentable {
         Coordinator(onTapCoordinate: onTapCoordinate)
     }
 
-    func makeUIView(context: Context) -> MKMapView {
-        let mapView = MKMapView(frame: .zero)
+    func makeUIView(context: Context) -> RelocMKMapView {
+        let mapView = RelocMKMapView(frame: .zero)
         mapView.delegate = context.coordinator
         mapView.showsCompass = true
         mapView.showsScale = true
 
         let tap = UITapGestureRecognizer(target: context.coordinator, action: #selector(Coordinator.handleTap(_:)))
         mapView.addGestureRecognizer(tap)
+
+        applyMapSource(to: mapView, context: context)
 
         let activeAnn = TaggedAnnotation(kind: .active)
         activeAnn.coordinate = activeCoordinate
@@ -508,15 +712,11 @@ private struct InteractiveMKMapView: UIViewRepresentable {
         return mapView
     }
 
-    func updateUIView(_ uiView: MKMapView, context: Context) {
+    func updateUIView(_ uiView: RelocMKMapView, context: Context) {
         context.coordinator.onTapCoordinate = onTapCoordinate
         context.coordinator.isSessionRunning = isSessionRunning
 
-        switch mapStyle {
-        case .standard: uiView.mapType = .standard
-        case .satellite: uiView.mapType = .satellite
-        case .hybrid: uiView.mapType = .hybrid
-        }
+        applyMapSource(to: uiView, context: context)
 
         if let activeAnn = context.coordinator.activeAnnotation {
             if abs(activeAnn.coordinate.latitude - activeCoordinate.latitude) > 1e-9 ||
@@ -557,6 +757,36 @@ private struct InteractiveMKMapView: UIViewRepresentable {
         }
     }
 
+    private func applyMapSource(to mapView: RelocMKMapView, context: Context) {
+        mapView.hideNativeAttribution = mapSource.isPureWGS84
+
+        if mapSource == .appleNative {
+            if let overlay = context.coordinator.tileOverlay {
+                mapView.removeOverlay(overlay)
+                context.coordinator.tileOverlay = nil
+                context.coordinator.appliedTileKey = nil
+            }
+            switch mapStyle {
+            case .standard: mapView.mapType = .standard
+            case .satellite: mapView.mapType = .satellite
+            case .hybrid: mapView.mapType = .hybrid
+            }
+            return
+        }
+
+        let key = mapSource.rawValue
+        guard context.coordinator.appliedTileKey != key else { return }
+
+        if let existing = context.coordinator.tileOverlay {
+            mapView.removeOverlay(existing)
+        }
+        mapView.mapType = .standard
+        let overlay = GlobalWGSTileOverlay(source: mapSource, isDarkMode: isDarkMode)
+        mapView.addOverlay(overlay, level: .aboveLabels)
+        context.coordinator.tileOverlay = overlay
+        context.coordinator.appliedTileKey = key
+    }
+
     final class TaggedAnnotation: MKPointAnnotation {
         enum Kind { case active, pending }
         let kind: Kind
@@ -571,6 +801,8 @@ private struct InteractiveMKMapView: UIViewRepresentable {
         var isSessionRunning = false
         var activeAnnotation: TaggedAnnotation?
         var pendingAnnotation: TaggedAnnotation?
+        var tileOverlay: MKTileOverlay?
+        var appliedTileKey: String?
 
         init(onTapCoordinate: @escaping (CLLocationCoordinate2D) -> Void) {
             self.onTapCoordinate = onTapCoordinate
@@ -581,6 +813,13 @@ private struct InteractiveMKMapView: UIViewRepresentable {
             let point = gesture.location(in: mapView)
             let coord = mapView.convert(point, toCoordinateFrom: mapView)
             onTapCoordinate(coord)
+        }
+
+        func mapView(_ mapView: MKMapView, rendererFor overlay: MKOverlay) -> MKOverlayRenderer {
+            if let tile = overlay as? MKTileOverlay {
+                return MKTileOverlayRenderer(tileOverlay: tile)
+            }
+            return MKOverlayRenderer(overlay: overlay)
         }
 
         func mapView(_ mapView: MKMapView, viewFor annotation: MKAnnotation) -> MKAnnotationView? {
@@ -599,6 +838,123 @@ private struct InteractiveMKMapView: UIViewRepresentable {
             }
             return view
         }
+    }
+}
+
+/// MKMapView subclass that suppresses the underlying MapKit/AutoNavi attribution logo
+/// when custom WGS-84 tiles completely replace map content (`canReplaceMapContent = true`).
+private final class RelocMKMapView: MKMapView {
+    var hideNativeAttribution: Bool = false {
+        didSet {
+            updateAttributionSubviews()
+        }
+    }
+
+    override func layoutSubviews() {
+        super.layoutSubviews()
+        updateAttributionSubviews()
+    }
+
+    override func didAddSubview(_ subview: UIView) {
+        super.didAddSubview(subview)
+        updateAttributionSubviews()
+    }
+
+    private func updateAttributionSubviews() {
+        Self.applyAttributionVisibility(in: self, hide: hideNativeAttribution, depth: 0)
+    }
+
+    private static func applyAttributionVisibility(in root: UIView, hide: Bool, depth: Int) {
+        guard depth <= 4 else { return }
+        for subview in root.subviews {
+            let className = String(describing: type(of: subview))
+            // Never touch map rendering canvas, overlays, annotations, compass, or scale bar.
+            if className.contains("BasicMap")
+                || className.contains("VKMap")
+                || className.contains("Annotation")
+                || className.contains("Overlay")
+                || className.contains("Compass")
+                || className.contains("Scale") {
+                continue
+            }
+            if isAttributionView(subview, className: className) {
+                subview.isHidden = hide
+                subview.alpha = hide ? 0.0 : 1.0
+                continue
+            }
+            applyAttributionVisibility(in: subview, hide: hide, depth: depth + 1)
+        }
+    }
+
+    private static func isAttributionView(_ view: UIView, className: String) -> Bool {
+        if className.localizedCaseInsensitiveContains("Attribution")
+            || className.localizedCaseInsensitiveContains("Logo")
+            || className.localizedCaseInsensitiveContains("Legal") {
+            return true
+        }
+        if let label = view as? UILabel, let text = label.text,
+           (text.contains("高德") || text.localizedCaseInsensitiveContains("AutoNavi") || text.contains("法律") || text.localizedCaseInsensitiveContains("Legal")) {
+            return true
+        }
+        return false
+    }
+}
+
+/// High-DPI cached global WGS-84 tile overlay (`canReplaceMapContent = true`) that completely replaces
+/// AutoNavi/AMap tiles on Mainland China devices while keeping MapKit gestures, annotations, and search.
+private final class GlobalWGSTileOverlay: MKTileOverlay {
+    private let source: MapSource
+    private let isDarkMode: Bool
+
+    private static let tileSession: URLSession = {
+        let config = URLSessionConfiguration.default
+        config.urlCache = URLCache(
+            memoryCapacity: 32 * 1024 * 1024,
+            diskCapacity: 128 * 1024 * 1024,
+            diskPath: "reloc_map_tiles"
+        )
+        config.requestCachePolicy = .returnCacheDataElseLoad
+        config.httpAdditionalHeaders = [
+            "User-Agent": "Reloc/1.0 (iOS; https://github.com/reloc)",
+        ]
+        config.timeoutIntervalForRequest = 12
+        return URLSession(configuration: config)
+    }()
+
+    init(source: MapSource, isDarkMode: Bool) {
+        self.source = source
+        self.isDarkMode = isDarkMode
+        super.init(urlTemplate: nil)
+        self.canReplaceMapContent = true
+        self.minimumZ = 0
+        self.maximumZ = 19
+        self.tileSize = CGSize(width: 256, height: 256)
+    }
+
+    override func url(forTilePath path: MKTileOverlayPath) -> URL {
+        switch source {
+        case .globalStreet:
+            return URL(string: "https://server.arcgisonline.com/ArcGIS/rest/services/World_Street_Map/MapServer/tile/\(path.z)/\(path.y)/\(path.x)")!
+        case .globalOSM:
+            return URL(string: "https://tile.openstreetmap.org/\(path.z)/\(path.x)/\(path.y).png")!
+        case .globalSatellite:
+            return URL(string: "https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/\(path.z)/\(path.y)/\(path.x)")!
+        case .appleNative:
+            return URL(string: "https://server.arcgisonline.com/ArcGIS/rest/services/World_Street_Map/MapServer/tile/\(path.z)/\(path.y)/\(path.x)")!
+        }
+    }
+
+    override func loadTile(at path: MKTileOverlayPath, result: @escaping (Data?, Error?) -> Void) {
+        let tileURL = url(forTilePath: path)
+        var req = URLRequest(url: tileURL)
+        req.cachePolicy = .returnCacheDataElseLoad
+        Self.tileSession.dataTask(with: req) { data, response, error in
+            if let http = response as? HTTPURLResponse, !(200...299).contains(http.statusCode) {
+                result(nil, NSError(domain: "RelocTileOverlay", code: http.statusCode))
+                return
+            }
+            result(data, error)
+        }.resume()
     }
 }
 

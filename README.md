@@ -24,22 +24,24 @@
 
 | 模块 | 能力说明 |
 | :--- | :--- |
-| **定格定位** | 地图点击选点、关键词搜索、手动输入 WGS-84 坐标、自动反地理编码、运行中浏览并热更新定位、停止二次确认恢复真实 GPS |
-| **坐标优化** | 中国大陆地图 GCJ-02 ↔ WGS-84 自动双向纠偏；可选 ±0.6 m 自然 GPS 微幅漂移；标准 / 卫星 / 混合地图样式切换 |
+| **定格定位** | 地图点击选点、关键词搜索、手动输入 WGS-84 坐标、多级反地理编码（`CLGeocoder` → `Nominatim` → `BigDataCloud` 兜底不卡顿）、运行中浏览并热更新定位 |
+| **多源地图与纠偏** | 默认使用 **Apple 地图（MapKit 原生）** 并支持中国大陆 GCJ-02 ↔ WGS-84 自动双向纠偏；同时内置免 API Key 的 **全球街道图（Esri） / OpenStreetMap / 全球卫星图** 纯原生 WGS-84 瓦片地图（完全脱离 `MKMapView`，无高德字样）；可选 ±0.6 m 自然微漂移 |
+| **极速触发与优雅恢复** | iAP2 鉴权后延迟唤醒 `CoreLocation` + 自动脉冲订阅 `0xFFFA` + 初始高速锁定突发，首页实时显示外设生效状态；系统缓存顽固时提供 **一键刷新定位服务（PiP 悬浮 5 秒倒计时）**；停止定位时下发 NMEA 失效报文（`quality=0` / `V`）与 iAP2 `RST` 复位包并自动唤醒本机真实 GPS |
 | **后台保活** | 导航级后台定位保活 + 非零次声音频双保险；支持开关系统「定位服务」刷新缓存后自动重建后台断言，以及断线自动重连 |
-| **本机配对** | 兼容 `.rppairing` 与 `.mobiledevicepairing`；iOS 27+ 支持本机直接配对与 **画中画（PiP）悬浮指引窗** 实时展示 6 位配对码 |
+| **本机配对与导入** | 兼容 `.rppairing` / `.mobiledevicepairing` / `.mobilepair` / `.plist`；原生副本文件选择器避免置灰不可选，支持「用 Reloc 打开」直接导入；iOS 27+ 支持本机一键配对与 **画中画（PiP）悬浮指引窗** 实时展示 6 位配对码 |
 | **数据与实测** | 收藏夹（支持重命名 / 删除）、最近 30 条使用记录、异常中断一键恢复；内置 `CoreLocation` 实测面板（`isSimulatedBySoftware` / `isProducedByAccessory`）与协议日志筛选 |
 
 ---
 
 ## 系统兼容性
 
-| 系统版本 | 日常脱离电脑运行 | 首次获取配对文件方式 | 说明 |
+| 设备 / 系统版本 | 日常脱离电脑运行 | 首次获取配对文件方式 | 说明 |
 | :--- | :---: | :--- | :--- |
-| **iOS 27.0+** | 支持 | **本机一键配对**（免电脑）或导入已有文件 | 通过 `_remotepairing-pairable-host._tcp.` + 画中画悬浮窗完成配对 |
-| **iOS 17.0 – 26.x** | 支持 | **需电脑通过 USB 首次导出**，导入后长期脱离电脑 | iOS 27 之前系统限制陌生主机无线首次配对 |
+| **iPhone · iOS 27.0+** | 支持 | **本机一键配对**（免电脑）或导入已有文件 | 通过 `_remotepairing-pairable-host._tcp.` + 画中画悬浮窗完成配对 |
+| **iPhone · iOS 17.0 – 26.x** | 支持 | **需电脑通过 USB 首次导出**，导入后长期脱离电脑 | iOS 27 之前系统限制陌生主机无线首次配对 |
+| **iPad（iPadOS）** | **不支持** | — | iPadOS 不支持 CarPlay 且不提供 `com.apple.carkit.service` 外设通道，启动时将自动提示不可用 |
 
-> Reloc 自身不创建 VPN，回环流量（`10.7.0.1`）由外部代理工具提供。
+> Reloc 仅支持 **iPhone**；应用自身不创建 VPN，回环流量（`10.7.0.1`）由外部代理工具提供。
 
 ---
 
@@ -76,7 +78,10 @@
   ```
 
 - **导入到 Reloc**：
-  将 `.rppairing` / `.mobiledevicepairing` / `.plist` 传至 iPhone 后，在 Reloc **「设备连接」** 页点击 **「导入已有配对文件」**；或直接放入 **「文件 → 我的 iPhone → Reloc」** 目录，启动 App 时会自动导入。
+  将 `.rppairing` / `.mobiledevicepairing` / `.mobilepair` / `.plist` 传至 iPhone 后，任选其一即可完成导入：
+  1. 在 Reloc **「设备连接」** 页点击 **「导入已有配对文件」** 选择文件；
+  2. 在「文件 / 隔空投送 / 微信」中直接点击该文件并选择 **「用 Reloc 打开」**；
+  3. 或放入 **「文件 → 我的 iPhone → Reloc」** 目录，启动 App 时会自动导入最新配对记录。
 
 ### 3. 验证并开始使用
 在 **「设备连接」** 页点击 **「检测设备连接」**，状态变为 **「设备回环已就绪」** 后即可切回 **「定位」** 页开始定格定位。
@@ -128,9 +133,22 @@ cp -R build/DerivedData/Build/Products/Release-iphoneos/Reloc.app build/Payload/
 </details>
 
 <details>
-<summary><strong>2. 已显示运行中但系统地图位置未立即刷新？</strong></summary>
+<summary><strong>2. 已开始定位或停止定位后，系统位置未立刻切换 / 恢复？</strong></summary>
 
-iOS 在存在真实 GNSS 信号时可能延迟切换到外设源。请保持 Reloc 在后台运行，前往系统 **「设置 → 隐私与安全性 → 定位服务」** 关闭定位服务约 10 秒后再重新打开，或在 **「实测与日志」** 页观察 `isProducedByAccessory` 是否变为 `true`。
+- **开始定位后**：Reloc 会在 iAP2 鉴权完成后自动脉冲唤醒 `0xFFFA` 并高速推送 NMEA，首页会实时显示是否已锁定为外设源（`isProducedByAccessory = true`）。若强室内 Wi-Fi / 室外 GNSS 下系统仍沿用缓存，直接点击卡片上的 **「一键刷新定位服务（浮窗指引）」**，按画中画浮窗提示关闭「定位服务」5 秒后重新打开即可 100% 强制生效。
+- **停止定位后**：Reloc 会自动发送 NMEA 失效报文与 iAP2 `RST` 链路复位包，并自动唤醒本机真实 GPS 恢复定位；若室内弱信号下系统仍缓存上次位置，点击卡片上的 **「一键刷新定位服务（恢复真实位置）」** 即可立刻恢复。
+</details>
+
+<details>
+<summary><strong>3. 为什么默认 Apple 地图在中国大陆会显示「高德地图」？</strong></summary>
+
+受中国大陆测绘合规政策限制，iOS 原生 `MapKit` 在中国大陆环境下会自动切换为高德地图底图与角标。如需完全无高德字样的纯国际 WGS-84 地图，点击地图右侧图层按钮切换为 **「全球街道图 / OpenStreetMap / 全球卫星图」** 即可（全部免 API Key，且自动禁用 GCJ-02 偏移）。
+</details>
+
+<details>
+<summary><strong>4. 为什么 iPad 无法使用 Reloc？</strong></summary>
+
+Reloc 通过系统 CarKit 外设通道（`com.apple.carkit.service`）注入外设级 GPS。Apple 仅在 iPhone 上提供 CarPlay / CarKit 服务，iPadOS 不包含该服务，因此 Reloc 在 iPad 上启动时会直接提示设备不可用。
 </details>
 
 ---

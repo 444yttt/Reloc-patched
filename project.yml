@@ -35,6 +35,35 @@ targets:
         LSRequiresIPhoneOS: true
         LSSupportsOpeningDocumentsInPlace: true
         UIFileSharingEnabled: true
+        CFBundleDocumentTypes:
+          - CFBundleTypeName: Reloc Pairing Record
+            CFBundleTypeRole: Viewer
+            LSHandlerRank: Alternate
+            LSItemContentTypes:
+              - dev.reloc.rppairing
+              - dev.reloc.mobiledevicepairing
+              - com.apple.property-list
+              - public.xml
+        UTImportedTypeDeclarations:
+          - UTTypeIdentifier: dev.reloc.rppairing
+            UTTypeDescription: Remote Pairing File
+            UTTypeConformsTo:
+              - public.data
+              - public.content
+              - com.apple.property-list
+            UTTypeTagSpecification:
+              public.filename-extension:
+                - rppairing
+          - UTTypeIdentifier: dev.reloc.mobiledevicepairing
+            UTTypeDescription: Mobile Device Pairing File
+            UTTypeConformsTo:
+              - public.data
+              - public.content
+              - com.apple.property-list
+            UTTypeTagSpecification:
+              public.filename-extension:
+                - mobiledevicepairing
+                - mobilepair
         UIApplicationSupportsIndirectInputEvents: true
         UILaunchScreen: {}
         UIRequiresFullScreen: true

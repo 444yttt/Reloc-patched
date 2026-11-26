@@ -26,6 +26,38 @@ public enum AppAppearanceMode: String, CaseIterable, Codable, Identifiable, Send
     }
 }
 
+public enum MapSource: String, CaseIterable, Codable, Identifiable, Sendable {
+    case appleNative
+    case globalStreet
+    case globalOSM
+    case globalSatellite
+
+    public var id: String { rawValue }
+
+    public var title: String {
+        switch self {
+        case .appleNative: return "Apple 地图（系统默认）"
+        case .globalStreet: return "全球街道图（Esri · WGS-84）"
+        case .globalOSM: return "OpenStreetMap（开源 · WGS-84）"
+        case .globalSatellite: return "全球卫星图（Esri · WGS-84）"
+        }
+    }
+
+    public var shortTitle: String {
+        switch self {
+        case .appleNative: return "Apple 地图"
+        case .globalStreet: return "全球街道"
+        case .globalOSM: return "OSM 地图"
+        case .globalSatellite: return "全球卫星"
+        }
+    }
+
+    /// True when the tile source uses pure WGS-84 coordinates (no GCJ-02 shift in Mainland China).
+    public var isPureWGS84: Bool {
+        self != .appleNative
+    }
+}
+
 public enum MapDisplayStyle: String, CaseIterable, Codable, Identifiable, Sendable {
     case standard
     case satellite
@@ -174,6 +206,7 @@ public final class CredentialStore {
         static let microJitter = "reloc.microJitter"
         static let appearance = "reloc.appearance"
         static let mapStyle = "reloc.mapStyle"
+        static let mapSource = "reloc.mapSource"
         static let favorites = "reloc.favorites"
         static let recents = "reloc.recents"
         static let interruptedSession = "reloc.interruptedSession"
@@ -278,6 +311,11 @@ public final class CredentialStore {
         set { defaults.set(newValue.rawValue, forKey: Keys.mapStyle) }
     }
 
+    public var mapSource: MapSource {
+        get { defaults.string(forKey: Keys.mapSource).flatMap(MapSource.init) ?? .appleNative }
+        set { defaults.set(newValue.rawValue, forKey: Keys.mapSource) }
+    }
+
     public var lastTargetLocation: TargetLocation {
         get {
             if defaults.object(forKey: Keys.lastLatitude) == nil {
@@ -376,7 +414,29 @@ public final class CredentialStore {
     public func importPairingFile(from url: URL) throws -> SavedPairing {
         let accessed = url.startAccessingSecurityScopedResource()
         defer { if accessed { url.stopAccessingSecurityScopedResource() } }
-        let data = try Data(contentsOf: url)
+
+        if url.hasDirectoryPath || ((try? url.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) == true) {
+            throw PairingImportError.invalidFormat("请选择具体的配对文件，而不是文件夹。")
+        }
+
+        let data: Data
+        do {
+            data = try Data(contentsOf: url)
+        } catch {
+            var coordError: NSError?
+            var readResult: Result<Data, Error>?
+            let coordinator = NSFileCoordinator()
+            coordinator.coordinate(readingItemAt: url, options: [.withoutChanges], error: &coordError) { coordinatedURL in
+                readResult = Result { try Data(contentsOf: coordinatedURL) }
+            }
+            if let readResult {
+                data = try readResult.get()
+            } else if let coordError {
+                throw coordError
+            } else {
+                throw error
+            }
+        }
         return try importPairingData(data)
     }
 
@@ -411,9 +471,9 @@ public final class CredentialStore {
         ) else { return nil }
 
         let validExts: Set<String> = ["mobiledevicepairing", "mobilepair", "rppairing", "plist"]
-        let candidates: [Data] = files.prefix(100).compactMap { url in
+        let candidates: [(date: Date, data: Data)] = files.prefix(100).compactMap { url in
             guard validExts.contains(url.pathExtension.lowercased()),
-                  let vals = try? url.resourceValues(forKeys: [.isRegularFileKey, .isSymbolicLinkKey, .fileSizeKey]),
+                  let vals = try? url.resourceValues(forKeys: [.isRegularFileKey, .isSymbolicLinkKey, .fileSizeKey, .contentModificationDateKey]),
                   vals.isRegularFile == true,
                   vals.isSymbolicLink != true,
                   (vals.fileSize ?? Int.max) < 2_000_000,
@@ -421,11 +481,11 @@ public final class CredentialStore {
                   (try? Self.validatePairingData(data)) != nil else {
                 return nil
             }
-            return data
+            return (vals.contentModificationDate ?? .distantPast, data)
         }
 
-        guard candidates.count == 1 else { return nil }
-        return try? importPairingData(candidates[0])
+        guard let newest = candidates.max(by: { $0.date < $1.date }) else { return nil }
+        return try? importPairingData(newest.data)
     }
 
     public func loadPairing() -> (SavedPairing?, PairingStatus) {

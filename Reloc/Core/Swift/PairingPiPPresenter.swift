@@ -26,10 +26,17 @@ final class PairingPiPPresenter: NSObject, ObservableObject {
     private var headline: String = "准备设备配对…"
     private var subtitle: String = "请保持本机网络回环已开启"
     private var pin: String?
+    private var countdownSeconds: Int?
+    private var mode: Mode = .pairing
     private var outcome: Outcome = .inProgress
     private var deadline: Date = Date().addingTimeInterval(300)
     private var frameCounter: Int64 = 0
     private var wantsAutoStart = false
+
+    enum Mode {
+        case pairing
+        case locationRefresh
+    }
 
     enum Outcome {
         case inProgress
@@ -45,11 +52,13 @@ final class PairingPiPPresenter: NSObject, ObservableObject {
         dismissTimer?.invalidate()
         dismissTimer = nil
 
+        self.mode = .pairing
         self.deadline = deadline
         self.stepIndex = 1
         self.headline = "准备本机配对服务…"
         self.subtitle = "正在启动 Bonjour 配对广播"
         self.pin = nil
+        self.countdownSeconds = nil
         self.outcome = .inProgress
         self.wantsAutoStart = true
 
@@ -67,6 +76,75 @@ final class PairingPiPPresenter: NSObject, ObservableObject {
         // Try starting PiP once the system marks it possible (short warmup).
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) { [weak self] in
             self?.tryStartPiPIfDesired()
+        }
+    }
+
+    func startLocationRefreshGuide() {
+        dismissTimer?.invalidate()
+        dismissTimer = nil
+        refreshTimer?.invalidate()
+        refreshTimer = nil
+
+        self.mode = .locationRefresh
+        self.deadline = Date().addingTimeInterval(180)
+        self.stepIndex = 1
+        self.headline = "① 关闭系统「定位服务」"
+        self.subtitle = "关闭后将自动开始 5 秒倒计时，无需手动计时"
+        self.pin = nil
+        self.countdownSeconds = nil
+        self.outcome = .inProgress
+        self.wantsAutoStart = true
+
+        guard AVPictureInPictureController.isPictureInPictureSupported() else {
+            isSupported = false
+            return
+        }
+        isSupported = true
+
+        configureAudioSession()
+        ensureControllerAttached()
+        enqueueCurrentFrame()
+
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) { [weak self] in
+            self?.tryStartPiPIfDesired()
+        }
+    }
+
+    func updateLocationRefresh(step: Int, headline: String, subtitle: String, countdown: Int? = nil) {
+        if self.mode == .locationRefresh,
+           self.outcome == .inProgress,
+           self.stepIndex == step,
+           self.headline == headline,
+           self.subtitle == subtitle,
+           self.countdownSeconds == countdown {
+            return
+        }
+        self.mode = .locationRefresh
+        self.stepIndex = step
+        self.headline = headline
+        self.subtitle = subtitle
+        self.pin = nil
+        self.countdownSeconds = countdown
+        self.outcome = .inProgress
+        enqueueCurrentFrame()
+    }
+
+    func finishLocationRefresh(succeeded: Bool, message: String, headline: String? = nil) {
+        self.mode = .locationRefresh
+        self.outcome = succeeded ? .succeeded : .failed
+        self.stepIndex = succeeded ? 3 : self.stepIndex
+        self.headline = headline ?? (succeeded ? "外设定位已 100% 生效" : "定位刷新已取消")
+        self.subtitle = message
+        self.pin = nil
+        self.countdownSeconds = nil
+        self.wantsAutoStart = false
+        enqueueCurrentFrame()
+
+        dismissTimer?.invalidate()
+        dismissTimer = Timer.scheduledTimer(withTimeInterval: succeeded ? 3.5 : 2.5, repeats: false) { [weak self] _ in
+            Task { @MainActor in
+                self?.teardown()
+            }
         }
     }
 
@@ -140,7 +218,12 @@ final class PairingPiPPresenter: NSObject, ObservableObject {
 
     private func configureAudioSession() {
         let session = AVAudioSession.sharedInstance()
-        try? session.setCategory(.playback, mode: .moviePlayback, options: [.mixWithOthers])
+        // If BackgroundKeepAlive already activated `.playback`, avoid changing mode or re-activating
+        // on the main thread (which stalls mediaserverd and causes PiP launch stutter).
+        if session.category == .playback {
+            return
+        }
+        try? session.setCategory(.playback, mode: .default, options: [.mixWithOthers])
         try? session.setActive(true)
     }
 
@@ -201,11 +284,12 @@ final class PairingPiPPresenter: NSObject, ObservableObject {
 
     private func enqueueCurrentFrame() {
         guard let displayLayer = hostView?.displayLayer else { return }
-        if displayLayer.sampleBufferRenderer.status == .failed {
-            displayLayer.sampleBufferRenderer.flush()
+        let renderer = displayLayer.sampleBufferRenderer
+        if renderer.status == .failed || frameCounter > 0 {
+            renderer.flush()
         }
         guard let buffer = renderSampleBuffer() else { return }
-        displayLayer.sampleBufferRenderer.enqueue(buffer)
+        renderer.enqueue(buffer)
     }
 
     private func renderSampleBuffer() -> CMSampleBuffer? {
@@ -328,7 +412,7 @@ final class PairingPiPPresenter: NSObject, ObservableObject {
         let dotRect = CGRect(x: 24, y: 26, width: 12, height: 12)
         UIBezierPath(ovalIn: dotRect).fill()
 
-        let headerText = "Reloc · 设备配对指引" as NSString
+        let headerText = (mode == .locationRefresh ? "Reloc · 一键触发定位" : "Reloc · 设备配对指引") as NSString
         headerText.draw(
             at: CGPoint(x: 46, y: 20),
             withAttributes: [
@@ -339,12 +423,17 @@ final class PairingPiPPresenter: NSObject, ObservableObject {
 
         // Right countdown or step pill
         if outcome == .inProgress {
-            let remaining = max(0, Int(deadline.timeIntervalSinceNow.rounded()))
-            let countdown = String(format: "%02d:%02d  步骤 %d/3", remaining / 60, remaining % 60, stepIndex) as NSString
-            let size = countdown.size(withAttributes: [
+            let statusBadge: NSString
+            if mode == .locationRefresh {
+                statusBadge = String(format: "步骤 %d/3 · 实时监测", stepIndex) as NSString
+            } else {
+                let remaining = max(0, Int(deadline.timeIntervalSinceNow.rounded()))
+                statusBadge = String(format: "%02d:%02d  步骤 %d/3", remaining / 60, remaining % 60, stepIndex) as NSString
+            }
+            let size = statusBadge.size(withAttributes: [
                 .font: UIFont.monospacedDigitSystemFont(ofSize: 19, weight: .semibold),
             ])
-            countdown.draw(
+            statusBadge.draw(
                 at: CGPoint(x: rect.width - size.width - 24, y: 22),
                 withAttributes: [
                     .font: UIFont.monospacedDigitSystemFont(ofSize: 19, weight: .semibold),
@@ -374,6 +463,30 @@ final class PairingPiPPresenter: NSObject, ObservableObject {
             let hintAttrs: [NSAttributedString.Key: Any] = [
                 .font: UIFont.systemFont(ofSize: 21, weight: .medium),
                 .foregroundColor: UIColor.white.withAlphaComponent(0.78),
+            ]
+            let hintSize = hint.size(withAttributes: hintAttrs)
+            hint.draw(
+                at: CGPoint(x: (rect.width - hintSize.width) / 2, y: 170),
+                withAttributes: hintAttrs
+            )
+        } else if mode == .locationRefresh, let secs = countdownSeconds {
+            let text = (secs > 0 ? "\(secs) 秒" : "现在重新打开！") as NSString
+            let bigAttrs: [NSAttributedString.Key: Any] = [
+                .font: UIFont.monospacedDigitSystemFont(ofSize: secs > 0 ? 68 : 48, weight: .bold),
+                .foregroundColor: secs > 0
+                    ? UIColor(red: 1.0, green: 0.80, blue: 0.28, alpha: 1)
+                    : UIColor(red: 0.16, green: 0.86, blue: 0.56, alpha: 1),
+            ]
+            let bigSize = text.size(withAttributes: bigAttrs)
+            text.draw(
+                at: CGPoint(x: (rect.width - bigSize.width) / 2, y: secs > 0 ? 72 : 84),
+                withAttributes: bigAttrs
+            )
+
+            let hint = subtitle as NSString
+            let hintAttrs: [NSAttributedString.Key: Any] = [
+                .font: UIFont.systemFont(ofSize: 21, weight: .medium),
+                .foregroundColor: UIColor.white.withAlphaComponent(0.82),
             ]
             let hintSize = hint.size(withAttributes: hintAttrs)
             hint.draw(
