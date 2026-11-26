@@ -163,7 +163,7 @@ struct ConfigurationView: View {
                     Text("Remote Pairing サービスを自動検出し、ペアリング記録で広告の識別情報を確かめたあと、デバイスサービスで接続できることを確認します。")
                 }
 
-                Section("位置情報の設定") {
+                Section {
                     Stepper(value: $viewModel.intervalSeconds, in: 1.0...10.0, step: 0.5) {
                         Label {
                             Text(String(format: "NMEA 送信間隔 · %.1f 秒", viewModel.intervalSeconds))
@@ -222,6 +222,8 @@ struct ConfigurationView: View {
                             SettingsIconBadge(systemName: "bolt.shield.fill", color: .teal)
                         }
                     }
+                } header: {
+                    Text("位置情報の設定")
                 } footer: {
                     Text("遠距離へ一度に飛ぶとシステムに弾かれることがあります。段階移動は現在地から目標まで、指定の速度で滑らかに進みます。")
                 }
