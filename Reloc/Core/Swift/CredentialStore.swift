@@ -204,6 +204,7 @@ public final class CredentialStore {
         static let gcj02Correction = "reloc.gcj02Correction"
         static let backgroundKeepAlive = "reloc.backgroundKeepAlive"
         static let microJitter = "reloc.microJitter"
+        static let gradualMoveMode = "reloc.gradualMoveMode"
         static let appearance = "reloc.appearance"
         static let mapStyle = "reloc.mapStyle"
         static let mapSource = "reloc.mapSource"
@@ -299,6 +300,13 @@ public final class CredentialStore {
     public var microJitterEnabled: Bool {
         get { defaults.bool(forKey: Keys.microJitter) }
         set { defaults.set(newValue, forKey: Keys.microJitter) }
+    }
+
+    public var gradualMoveMode: GradualMoveMode {
+        get {
+            defaults.string(forKey: Keys.gradualMoveMode).flatMap(GradualMoveMode.init) ?? .shinkansen300
+        }
+        set { defaults.set(newValue.rawValue, forKey: Keys.gradualMoveMode) }
     }
 
     public var appearanceMode: AppAppearanceMode {

@@ -73,6 +73,25 @@ public final class RelocViewModel: ObservableObject {
             }
         }
     }
+    @Published public var gradualMoveMode: GradualMoveMode {
+        didSet { store.gradualMoveMode = gradualMoveMode }
+    }
+    /// True while injected NMEA is cruising toward the target pin.
+    @Published public var isGradualMoving = false
+    @Published public var gradualMoveRemainingMeters: Double = 0
+    @Published public var gradualMoveSpeedKmh: Double = 0
+
+    public var gradualMoveRemainingText: String {
+        let meters = gradualMoveRemainingMeters
+        if meters >= 10_000 {
+            return String(format: "残り %.0f km", meters / 1000)
+        }
+        if meters >= 1000 {
+            return String(format: "残り %.1f km", meters / 1000)
+        }
+        return String(format: "残り %.0f m", meters)
+    }
+
     @Published public var appearanceMode: AppAppearanceMode {
         didSet { store.appearanceMode = appearanceMode }
     }
@@ -154,6 +173,7 @@ public final class RelocViewModel: ObservableObject {
         self.gcj02CorrectionEnabled = store.gcj02CorrectionEnabled
         self.backgroundKeepAliveEnabled = store.backgroundKeepAliveEnabled
         self.microJitterEnabled = store.microJitterEnabled
+        self.gradualMoveMode = store.gradualMoveMode
         self.appearanceMode = store.appearanceMode
         self.mapStyle = store.mapStyle
         self.mapSource = store.mapSource
@@ -304,11 +324,11 @@ public final class RelocViewModel: ObservableObject {
         pendingLocation = nil
         isAccessoryLocationConfirmed = false
         session?.markCoreLocationConfirmed(false)
-        coreLocation.setAccuracyMode(.acquisition)
         session?.triggerFastBurst(seconds: 8.0)
         recordRecent(name: selectedPlaceName, subtitle: selectedPlaceAddress, location: targetLocation)
         persistRecoveryRecord()
         if snapshot.isRunning {
+            maybeLogGradualMoveStart()
             updateInjectionPhase()
             resetAutoLockNudgeCount()
             scheduleLockWatchdog()
@@ -515,10 +535,104 @@ public final class RelocViewModel: ObservableObject {
     }
 
     private func pushLocationToSession() {
+        guard let session else { return }
+        let box = session.locationBox
+        if snapshot.isRunning, gradualMoveMode.speedKmh > 0, box.status().isMoving {
+            // Keep cruising from the current transmitted coordinate toward the new pin.
+            // Do not apply stationary jitter mid-move — it would fight the velocity vector.
+            _ = box.setDestination(targetLocation, speedKmh: gradualMoveMode.speedKmh)
+            refreshGradualMoveStatus()
+            return
+        }
+        if snapshot.isRunning, gradualMoveMode.speedKmh > 0, !box.status().isMoving {
+            let remaining = LiveLocationBox.distanceMeters(from: box.peek(), to: targetLocation)
+            if remaining >= 100 {
+                _ = box.setDestination(targetLocation, speedKmh: gradualMoveMode.speedKmh)
+                refreshGradualMoveStatus()
+                return
+            }
+        }
         let outgoing = microJitterEnabled
             ? CoordinateTransform.applyMicroJitter(to: targetLocation)
             : targetLocation
-        session?.locationBox.set(outgoing)
+        box.set(outgoing)
+        refreshGradualMoveStatus()
+    }
+
+    private func usableRealOrigin() -> TargetLocation? {
+        guard let latest = coreLocation.latest,
+              latest.horizontalAccuracy > 0,
+              latest.horizontalAccuracy < 20_000,
+              abs(latest.timestamp.timeIntervalSinceNow) < 300 else {
+            return nil
+        }
+        return TargetLocation(
+            latitude: latest.latitude,
+            longitude: latest.longitude,
+            altitude: latest.altitude.isFinite ? latest.altitude : targetLocation.altitude
+        )
+    }
+
+    private func configureGradualMoveIfNeeded(on session: AccessoryLocationSession) {
+        guard gradualMoveMode.speedKmh > 0, let origin = usableRealOrigin() else {
+            session.locationBox.set(targetLocation)
+            refreshGradualMoveStatus()
+            return
+        }
+        let remaining = LiveLocationBox.distanceMeters(from: origin, to: targetLocation)
+        if remaining < 100 {
+            session.locationBox.set(targetLocation)
+            refreshGradualMoveStatus()
+            return
+        }
+        session.locationBox.set(origin)
+        _ = session.locationBox.setDestination(targetLocation, speedKmh: gradualMoveMode.speedKmh)
+        logGradualMoveStarted(distanceMeters: remaining, speedKmh: gradualMoveMode.speedKmh)
+        refreshGradualMoveStatus()
+    }
+
+    private func maybeLogGradualMoveStart() {
+        guard snapshot.isRunning, gradualMoveMode.speedKmh > 0, let session else { return }
+        let status = session.locationBox.status()
+        guard status.isMoving, status.remainingMeters >= 100 else { return }
+        logGradualMoveStarted(distanceMeters: status.remainingMeters, speedKmh: status.speedKmh)
+    }
+
+    private func logGradualMoveStarted(distanceMeters: Double, speedKmh: Double) {
+        events.append(ProtocolEvent(
+            name: "gradual_move_started",
+            detail: String(format: "{\"event\":\"gradual_move_started\",\"distance_m\":%.1f,\"speed_kmh\":%.0f}", distanceMeters, speedKmh)
+        ))
+    }
+
+    private func logGradualMoveArrived() {
+        events.append(ProtocolEvent(
+            name: "gradual_move_arrived",
+            detail: "{\"event\":\"gradual_move_arrived\"}"
+        ))
+    }
+
+    private func refreshGradualMoveStatus() {
+        if let status = session?.locationBox.status(), snapshot.isRunning {
+            isGradualMoving = status.isMoving
+            gradualMoveRemainingMeters = status.remainingMeters
+            gradualMoveSpeedKmh = status.speedKmh
+            if session?.locationBox.takeArrivalEvent() == true {
+                logGradualMoveArrived()
+                isGradualMoving = false
+                gradualMoveRemainingMeters = 0
+            }
+        } else {
+            isGradualMoving = false
+            gradualMoveRemainingMeters = 0
+            gradualMoveSpeedKmh = 0
+        }
+    }
+
+    private func clearGradualMoveState() {
+        isGradualMoving = false
+        gradualMoveRemainingMeters = 0
+        gradualMoveSpeedKmh = 0
     }
 
     // MARK: - Interrupted Session Recovery
@@ -736,6 +850,7 @@ public final class RelocViewModel: ObservableObject {
                     guard let self else { return }
                     self.snapshot = snap
                     self.updateInjectionPhase()
+                    self.refreshGradualMoveStatus()
                     if !snap.isRunning {
                         self.cancelTriggerTasks()
                         self.stopJitterTimer()
@@ -745,6 +860,7 @@ public final class RelocViewModel: ObservableObject {
                         }
                         self.isAccessoryLocationConfirmed = false
                         self.needsLocationServiceRefresh = false
+                        self.clearGradualMoveState()
                         self.injectionPhase = .idle
                         if self.isLocationRefreshGuideActive {
                             self.isLocationRefreshGuideActive = false
@@ -777,6 +893,7 @@ public final class RelocViewModel: ObservableObject {
             }
         )
         self.session = newSession
+        configureGradualMoveIfNeeded(on: newSession)
         newSession.start(
             configuration: config,
             pairing: pairing,
@@ -792,6 +909,7 @@ public final class RelocViewModel: ObservableObject {
         keepAlive.stop()
         isAccessoryLocationConfirmed = false
         needsLocationServiceRefresh = false
+        clearGradualMoveState()
         injectionPhase = .idle
         if isLocationRefreshGuideActive {
             isLocationRefreshGuideActive = false
@@ -829,7 +947,6 @@ public final class RelocViewModel: ObservableObject {
             guard !Task.isCancelled, let self, !self.snapshot.isRunning else { return }
 
             // Actively request fresh internal GNSS/Wi-Fi/Cell fix so `locationd` flushes the cached accessory fix.
-            self.coreLocation.setAccuracyMode(.realLocationRestore)
             self.coreLocation.requestAndStart()
             self.coreLocation.pulseForAccessoryLock()
             self.events.append(ProtocolEvent(
@@ -896,7 +1013,6 @@ public final class RelocViewModel: ObservableObject {
                 headline: "③ このiPhone本来の位置情報を再取得しています…",
                 subtitle: "位置情報サービスを再びオンにしました。1〜2秒お待ちください"
             )
-            coreLocation.setAccuracyMode(.realLocationRestore)
             coreLocation.requestAndStart()
             coreLocation.pulseForAccessoryLock()
         }
@@ -974,10 +1090,8 @@ public final class RelocViewModel: ObservableObject {
         resetAutoLockNudgeCount()
         // Activate a CoreLocation consumer right AFTER iAP2 auth succeeds so
         // `locationd` pairs this request with the authenticated MFi accessory.
-        // Use acquisition accuracy (10m), not BestForNavigation, so we don't
-        // wake onboard GNSS while seeking the accessory lock.
+        // Accuracy stays at the monitor's fixed 10m setting for the whole session.
         keepAlive.activateLocationSubscription(forceRestart: true)
-        coreLocation.setAccuracyMode(.acquisition)
         coreLocation.requestAndStart()
         updateInjectionPhase()
 
@@ -1035,7 +1149,6 @@ public final class RelocViewModel: ObservableObject {
     private func handleLocationStoppedBySystem() {
         isAccessoryLocationConfirmed = false
         session?.markCoreLocationConfirmed(false)
-        coreLocation.setAccuracyMode(.acquisition)
         updateInjectionPhase()
 
         // Debounce 0xFFFC by 0.9s so transient app-switch hiccups never falsely flash "5 秒"
@@ -1161,7 +1274,6 @@ public final class RelocViewModel: ObservableObject {
                 lockWatchdogGeneration += 1
                 isLockWatchdogCycleActive = false
                 isPerformingAutoLockNudge = false
-                coreLocation.setAccuracyMode(.accessoryHold)
                 RelocTheme.hapticSuccess()
                 events.append(ProtocolEvent(
                     name: "accessory_location_confirmed",
@@ -1177,7 +1289,6 @@ public final class RelocViewModel: ObservableObject {
                     )
                 }
             } else {
-                coreLocation.setAccuracyMode(.acquisition)
                 let isAccessory = telemetry.isProducedByAccessory == true
                 events.append(ProtocolEvent(
                     name: "accessory_location_lost",
@@ -1229,7 +1340,6 @@ public final class RelocViewModel: ObservableObject {
         needsLocationServiceRefresh = false
         resetAutoLockNudgeCount()
         session?.triggerFastBurst(seconds: 15.0)
-        coreLocation.setAccuracyMode(.acquisition)
         keepAlive.pulseLocationSubscription()
         coreLocation.pulseForAccessoryLock()
         scheduleLockWatchdog()

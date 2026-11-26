@@ -204,7 +204,6 @@ public final class BackgroundKeepAlive: NSObject, CLLocationManagerDelegate {
             locationManager.allowsBackgroundLocationUpdates = true
             locationManager.pausesLocationUpdatesAutomatically = false
             locationManager.showsBackgroundLocationIndicator = true
-            applyKeepAliveAccuracy()
             locationManager.startUpdatingLocation()
         }
     }

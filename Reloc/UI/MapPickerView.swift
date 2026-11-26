@@ -259,8 +259,14 @@ struct MapPickerView: View {
     private var statusPillTitle: String {
         switch viewModel.injectionPhase {
         case .activeConfirmed:
+            if viewModel.isGradualMoving {
+                return "段階移動中（\(viewModel.gradualMoveRemainingText)）"
+            }
             return "外部位置情報が有効です ✓"
         case .injectingPendingLock:
+            if viewModel.isGradualMoving {
+                return "段階移動中（\(viewModel.gradualMoveRemainingText)）· ACK \(viewModel.snapshot.packetsAcknowledged)"
+            }
             return viewModel.needsLocationServiceRefresh
                 ? "更新待ち · ACK \(viewModel.snapshot.packetsAcknowledged)"
                 : "位置を切り替え中 · ACK \(viewModel.snapshot.packetsAcknowledged)"
@@ -555,8 +561,29 @@ struct MapPickerView: View {
         }
     }
 
+    private var gradualMoveBanner: some View {
+        HStack(spacing: 8) {
+            ProgressView().controlSize(.small)
+            VStack(alignment: .leading, spacing: 1) {
+                Text("段階移動中（\(viewModel.gradualMoveRemainingText)）")
+                    .font(.caption.weight(.bold))
+                    .foregroundStyle(RelocTheme.accent)
+                Text(String(format: "指定速度 %.0f km/h で目標ピンへ向かっています", viewModel.gradualMoveSpeedKmh))
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+            }
+            Spacer()
+        }
+        .padding(10)
+        .background(RelocTheme.accent.opacity(0.12), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+    }
+
     @ViewBuilder
     private var liveTriggerStatusBanner: some View {
+        if viewModel.isGradualMoving, viewModel.snapshot.isRunning, !viewModel.needsLocationServiceRefresh {
+            gradualMoveBanner
+        } else {
         switch viewModel.injectionPhase {
         case .activeConfirmed:
             HStack(spacing: 8) {
@@ -639,6 +666,7 @@ struct MapPickerView: View {
             }
             .padding(9)
             .background(RelocTheme.accent.opacity(0.10), in: RoundedRectangle(cornerRadius: 11, style: .continuous))
+        }
         }
     }
 

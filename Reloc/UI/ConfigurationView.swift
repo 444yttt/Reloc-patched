@@ -195,6 +195,18 @@ struct ConfigurationView: View {
                         }
                     }
 
+                    Picker(selection: $viewModel.gradualMoveMode) {
+                        ForEach(GradualMoveMode.allCases) { mode in
+                            Text(mode.title).tag(mode)
+                        }
+                    } label: {
+                        Label {
+                            Text("移動モード")
+                        } icon: {
+                            SettingsIconBadge(systemName: "arrow.triangle.swap", color: RelocTheme.accent)
+                        }
+                    }
+
                     Toggle(isOn: $viewModel.microJitterEnabled) {
                         Label {
                             Text("自然な微小ドリフト（±0.6m のGPS揺れ）")
@@ -210,6 +222,8 @@ struct ConfigurationView: View {
                             SettingsIconBadge(systemName: "bolt.shield.fill", color: .teal)
                         }
                     }
+                } footer: {
+                    Text("遠距離へ一度に飛ぶとシステムに弾かれることがあります。段階移動は現在地から目標まで、指定の速度で滑らかに進みます。")
                 }
 
                 Section {

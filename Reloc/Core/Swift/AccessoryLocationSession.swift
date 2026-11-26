@@ -83,21 +83,172 @@ public enum ConnectionCheckError: LocalizedError {
 public final class LiveLocationBox: @unchecked Sendable {
     private let lock = NSLock()
     private var current: TargetLocation
+    private var destination: TargetLocation
+    private var cruiseSpeedKmh: Double = 0
+    private var lastAdvanceAt: CFAbsoluteTime?
+    private var pendingArrivalEvent = false
 
     public init(_ initial: TargetLocation) {
-        self.current = initial
+        var parked = initial
+        parked.speedKnots = 0
+        parked.courseDegrees = 0
+        self.current = parked
+        self.destination = parked
     }
 
-    public func get() -> TargetLocation {
+    /// Current coordinate without advancing the gradual-move clock.
+    public func peek() -> TargetLocation {
         lock.lock()
         defer { lock.unlock() }
         return current
     }
 
+    /// Backward-compatible alias of `peek()`. The send loop must use `advanceAndGet()`.
+    public func get() -> TargetLocation {
+        peek()
+    }
+
+    /// Park immediately at `location` with zero speed (warp / post-arrival hold).
     public func set(_ location: TargetLocation) {
         lock.lock()
-        current = location
+        var parked = location
+        parked.speedKnots = 0
+        parked.courseDegrees = 0
+        current = parked
+        destination = parked
+        cruiseSpeedKmh = 0
+        lastAdvanceAt = nil
+        pendingArrivalEvent = false
         lock.unlock()
+    }
+
+    /// Retarget a gradual cruise, keeping the coordinate currently being sent
+    /// as the start of the new leg. Returns remaining meters to the new destination.
+    @discardableResult
+    public func setDestination(_ dest: TargetLocation, speedKmh: Double) -> Double {
+        lock.lock()
+        defer { lock.unlock() }
+        destination = dest
+        cruiseSpeedKmh = max(0, speedKmh)
+        if lastAdvanceAt == nil {
+            lastAdvanceAt = CFAbsoluteTimeGetCurrent()
+        }
+        return Self.distanceMeters(from: current, to: destination)
+    }
+
+    public func status() -> GradualMoveStatus {
+        lock.lock()
+        defer { lock.unlock() }
+        let remaining = Self.distanceMeters(from: current, to: destination)
+        return GradualMoveStatus(
+            isMoving: cruiseSpeedKmh > 0 && remaining > 5,
+            remainingMeters: remaining,
+            speedKmh: cruiseSpeedKmh
+        )
+    }
+
+    /// Consume a one-shot arrival flag so the UI/log can emit `gradual_move_arrived` once.
+    public func takeArrivalEvent() -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        let flag = pendingArrivalEvent
+        pendingArrivalEvent = false
+        return flag
+    }
+
+    /// Advance along the great-circle path by the elapsed cruise time and return the new fix.
+    public func advanceAndGet() -> TargetLocation {
+        lock.lock()
+        defer { lock.unlock() }
+        advanceLocked()
+        return current
+    }
+
+    private func advanceLocked() {
+        guard cruiseSpeedKmh > 0 else {
+            if current.speedKnots != 0 {
+                current.speedKnots = 0
+            }
+            return
+        }
+
+        let now = CFAbsoluteTimeGetCurrent()
+        let rawDt = lastAdvanceAt.map { now - $0 } ?? 0.25
+        lastAdvanceAt = now
+        // Cap a stalled tick so one NMEA sentence cannot look like a multi-kilometre warp.
+        let dt = min(max(0, rawDt), 1.0)
+
+        let remaining = Self.distanceMeters(from: current, to: destination)
+        let arriveThreshold = 5.0
+        if remaining <= arriveThreshold {
+            parkAtDestinationLocked()
+            return
+        }
+
+        let step = (cruiseSpeedKmh / 3.6) * dt
+        if step >= remaining - arriveThreshold {
+            parkAtDestinationLocked()
+            return
+        }
+
+        let bearing = Self.bearingDegrees(from: current, to: destination)
+        let next = Self.destination(from: current, bearingDegrees: bearing, distanceMeters: step)
+        var moving = current
+        moving.latitude = next.latitude
+        moving.longitude = next.longitude
+        let fraction = min(1.0, step / max(remaining, 1e-6))
+        moving.altitude = current.altitude + (destination.altitude - current.altitude) * fraction
+        moving.speedKnots = cruiseSpeedKmh / 1.852
+        moving.courseDegrees = bearing
+        current = moving
+    }
+
+    private func parkAtDestinationLocked() {
+        let wasMoving = cruiseSpeedKmh > 0
+        var parked = destination
+        parked.speedKnots = 0
+        parked.courseDegrees = 0
+        current = parked
+        cruiseSpeedKmh = 0
+        lastAdvanceAt = nil
+        if wasMoving {
+            pendingArrivalEvent = true
+        }
+    }
+
+    private static let earthRadiusMeters = 6_371_000.0
+
+    static func distanceMeters(from a: TargetLocation, to b: TargetLocation) -> Double {
+        let lat1 = a.latitude * .pi / 180
+        let lat2 = b.latitude * .pi / 180
+        let dLat = (b.latitude - a.latitude) * .pi / 180
+        let dLon = (b.longitude - a.longitude) * .pi / 180
+        let h = sin(dLat / 2) * sin(dLat / 2)
+            + cos(lat1) * cos(lat2) * sin(dLon / 2) * sin(dLon / 2)
+        return 2 * earthRadiusMeters * asin(min(1, sqrt(h)))
+    }
+
+    static func bearingDegrees(from a: TargetLocation, to b: TargetLocation) -> Double {
+        let lat1 = a.latitude * .pi / 180
+        let lat2 = b.latitude * .pi / 180
+        let dLon = (b.longitude - a.longitude) * .pi / 180
+        let y = sin(dLon) * cos(lat2)
+        let x = cos(lat1) * sin(lat2) - sin(lat1) * cos(lat2) * cos(dLon)
+        let deg = atan2(y, x) * 180 / .pi
+        return (deg.truncatingRemainder(dividingBy: 360) + 360).truncatingRemainder(dividingBy: 360)
+    }
+
+    static func destination(from start: TargetLocation, bearingDegrees: Double, distanceMeters: Double) -> (latitude: Double, longitude: Double) {
+        let delta = distanceMeters / earthRadiusMeters
+        let theta = bearingDegrees * .pi / 180
+        let lat1 = start.latitude * .pi / 180
+        let lon1 = start.longitude * .pi / 180
+        let lat2 = asin(sin(lat1) * cos(delta) + cos(lat1) * sin(delta) * cos(theta))
+        let lon2 = lon1 + atan2(sin(theta) * sin(delta) * cos(lat1), cos(delta) - sin(lat1) * sin(lat2))
+        var lonDeg = lon2 * 180 / .pi
+        lonDeg = (lonDeg + 540).truncatingRemainder(dividingBy: 360) - 180
+        let latDeg = max(-90, min(90, lat2 * 180 / .pi))
+        return (latDeg, lonDeg)
     }
 }
 
@@ -924,7 +1075,7 @@ public final class AccessoryLocationSession {
                    !activeSentences.isEmpty,
                    !isCancelled() {
                     let tickNow = CFAbsoluteTimeGetCurrent()
-                    let target = locationBox.get()
+                    let target = locationBox.advanceAndGet()
                     let desiredInterval = effectiveInterval(base: configuration.intervalSeconds, now: tickNow)
                     let due = activeSentences.sorted().filter { id in
                         let last = lastSent[id] ?? -.infinity
