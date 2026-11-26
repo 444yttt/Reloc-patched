@@ -194,7 +194,7 @@ public final class AccessoryLocationSession {
                         }
                     }
                     guard let ptr else {
-                        continuation.resume(throwing: ConnectionCheckError.message("设备连接验证无返回结果"))
+                        continuation.resume(throwing: ConnectionCheckError.message("デバイス接続の検証から応答がありませんでした"))
                         return
                     }
                     defer { rl_string_free(ptr) }
@@ -205,7 +205,7 @@ public final class AccessoryLocationSession {
                         let carkit = obj["carkit_service"] as? String
                         continuation.resume(returning: ConnectionCheckResult(udid: udid, port: port, carkitService: carkit))
                     } else {
-                        let err = obj["error"] as? String ?? "设备连接验证失败"
+                        let err = Self.localizedBridgeError(obj["error"] as? String ?? "デバイス接続の検証に失敗しました")
                         continuation.resume(throwing: ConnectionCheckError.message(err))
                     }
                 }
@@ -385,10 +385,34 @@ public final class AccessoryLocationSession {
     }
 
     private static func isFatalPairingError(_ message: String) -> Bool {
+        // Tokens must stay in Chinese: they match errors emitted by RelocDeviceBridge (Rust).
         message.contains("配对记录校验未通过")
             || message.contains("公私钥不匹配")
             || message.contains("配对身份格式无效")
             || message.contains("配对数据为空")
+            || message.contains("公開鍵と秘密鍵が一致しません")
+    }
+
+    /// Localize RelocDeviceBridge (Chinese) errors for on-screen display only.
+    /// Matching in `isFatalPairingError` still uses the original messages.
+    private static func localizedBridgeError(_ message: String) -> String {
+        var s = message
+        let replacements = [
+            ("配对记录校验未通过，请重新配对这台 iPhone", "ペアリング記録の検証に失敗しました。このiPhoneを再度ペアリングしてください"),
+            ("配对身份的公私钥不匹配", "ペアリング識別情報の公開鍵と秘密鍵が一致しません"),
+            ("配对身份公私钥不匹配", "ペアリング識別情報の公開鍵と秘密鍵が一致しません"),
+            ("无法读取已保存的配对身份", "保存済みのペアリング識別情報を読み込めません"),
+            ("已保存的配对身份无效，请重新导入", "保存済みのペアリング識別情報が無効です。もう一度読み込んでください"),
+            ("无法启动配对监听", "ペアリングの待ち受けを開始できません"),
+            ("配对连接未建立", "ペアリング接続を確立できませんでした"),
+            ("设备配对未完成", "デバイスのペアリングが完了しませんでした"),
+            ("配对身份格式无效", "ペアリング識別情報の形式が無効です"),
+            ("配对数据为空或体积异常", "ペアリングデータが空か、サイズが不正です"),
+        ]
+        for (from, to) in replacements {
+            s = s.replacingOccurrences(of: from, with: to)
+        }
+        return s
     }
 
     private func runOverRemotePairing(
@@ -443,7 +467,7 @@ public final class AccessoryLocationSession {
             }
 
             guard let ptr else {
-                let err = "无法通过 Remote Pairing 建立设备服务通道"
+                let err = "Remote Pairing でデバイスのサービスチャネルを確立できません"
                 if configuration.mode != .send || isCancelled() {
                     if !isCancelled() {
                         snapshot.lastError = err
@@ -459,7 +483,7 @@ public final class AccessoryLocationSession {
                 snapshot.authenticated = false
                 snapshot.activeSentences = []
                 snapshot.packetsAcknowledged = cumulativePackets
-                snapshot.lastError = "通道建立失败，\(String(format: "%.1f", delay)) 秒后自动重连（第 \(reconnectAttempt) 次）"
+                snapshot.lastError = "チャネルの確立に失敗しました。\(String(format: "%.1f", delay)) 秒後に自動再接続します（\(reconnectAttempt) 回目）"
                 onSnapshot(snapshot)
                 emitEvent("reconnecting", details: ["attempt": reconnectAttempt, "delay_s": delay, "reason": err], isError: true)
                 sleepCancellable(delay, deadline: overallDeadline)
@@ -473,8 +497,9 @@ public final class AccessoryLocationSession {
             guard obj["ok"] as? Bool == true,
                   let fdNum = obj["fd"] as? Int,
                   let handleNum = obj["handle"] as? UInt64 else {
-                let err = obj["error"] as? String ?? "打开 Remote Pairing 服务失败"
-                if configuration.mode != .send || isCancelled() || Self.isFatalPairingError(err) {
+                let rawErr = obj["error"] as? String ?? "Remote Pairing サービスの開始に失敗しました"
+                let err = Self.localizedBridgeError(rawErr)
+                if configuration.mode != .send || isCancelled() || Self.isFatalPairingError(rawErr) {
                     if !isCancelled() {
                         snapshot.lastError = err
                         emitEvent("error", details: ["detail": err], isError: true)
@@ -489,7 +514,7 @@ public final class AccessoryLocationSession {
                 snapshot.authenticated = false
                 snapshot.activeSentences = []
                 snapshot.packetsAcknowledged = cumulativePackets
-                snapshot.lastError = "隧道中断，\(String(format: "%.1f", delay)) 秒后自动重连（第 \(reconnectAttempt) 次）"
+                snapshot.lastError = "トンネルが切断されました。\(String(format: "%.1f", delay)) 秒後に自動再接続します（\(reconnectAttempt) 回目）"
                 onSnapshot(snapshot)
                 emitEvent("reconnecting", details: ["attempt": reconnectAttempt, "delay_s": delay, "reason": err], isError: true)
                 sleepCancellable(delay, deadline: overallDeadline)
@@ -576,7 +601,7 @@ public final class AccessoryLocationSession {
                 snapshot.isRunning = true
                 snapshot.mode = configuration.mode
                 snapshot.packetsAcknowledged = cumulativePackets
-                snapshot.lastError = "连接断开，\(String(format: "%.1f", delay)) 秒后自动重连（第 \(reconnectAttempt) 次）"
+                snapshot.lastError = "接続が切断されました。\(String(format: "%.1f", delay)) 秒後に自動再接続します（\(reconnectAttempt) 回目）"
                 onSnapshot(snapshot)
                 emitEvent("reconnecting", details: ["attempt": reconnectAttempt, "delay_s": delay, "reason": err], isError: true)
                 sleepCancellable(delay, deadline: overallDeadline)
@@ -689,7 +714,7 @@ public final class AccessoryLocationSession {
                     snapshot.isRunning = true
                     snapshot.mode = configuration.mode
                     snapshot.packetsAcknowledged = cumulativePackets
-                    snapshot.lastError = "连接断开，\(String(format: "%.1f", delay)) 秒后自动重连（第 \(reconnectAttempt) 次）"
+                    snapshot.lastError = "接続が切断されました。\(String(format: "%.1f", delay)) 秒後に自動再接続します（\(reconnectAttempt) 回目）"
                     onSnapshot(snapshot)
                     emitEvent("reconnecting", details: ["attempt": reconnectAttempt, "delay_s": delay, "reason": err], isError: true)
                     sleepCancellable(delay, deadline: overallDeadline)
@@ -714,7 +739,7 @@ public final class AccessoryLocationSession {
                 snapshot.isRunning = true
                 snapshot.mode = configuration.mode
                 snapshot.packetsAcknowledged = cumulativePackets
-                snapshot.lastError = "Lockdown 中断，\(String(format: "%.1f", delay)) 秒后自动重连（第 \(reconnectAttempt) 次）"
+                snapshot.lastError = "Lockdown が中断されました。\(String(format: "%.1f", delay)) 秒後に自動再接続します（\(reconnectAttempt) 回目）"
                 onSnapshot(snapshot)
                 emitEvent("reconnecting", details: ["attempt": reconnectAttempt, "delay_s": delay, "reason": message], isError: true)
                 sleepCancellable(delay, deadline: overallDeadline)

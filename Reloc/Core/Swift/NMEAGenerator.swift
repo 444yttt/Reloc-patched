@@ -101,11 +101,13 @@ public enum NMEAGenerator {
             : 0.0
         let courseStr = String(format: "%.1f", courseNorm)
 
+        // Quality 2 (DGPS) + 12 sats + HDOP 0.5 + RMC mode D stays within standard
+        // NMEA-0183 and presents a tighter fix to locationd than quality 1 / HDOP 0.6 / mode A.
         let gga = sentence(
-            body: "GPGGA,\(clock),\(lat),\(north),\(lon),\(east),1,12,0.6,\(altitudeStr),M,0.0,M,,"
+            body: "GPGGA,\(clock),\(lat),\(north),\(lon),\(east),2,12,0.5,\(altitudeStr),M,0.0,M,0.0,"
         )
         let rmc = sentence(
-            body: "GPRMC,\(clock),A,\(lat),\(north),\(lon),\(east),\(speedStr),\(courseStr),\(ddmmyy),,,A"
+            body: "GPRMC,\(clock),A,\(lat),\(north),\(lon),\(east),\(speedStr),\(courseStr),\(ddmmyy),,,D"
         )
         return [1: gga, 2: rmc]
     }

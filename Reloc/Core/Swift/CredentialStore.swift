@@ -11,9 +11,9 @@ public enum AppAppearanceMode: String, CaseIterable, Codable, Identifiable, Send
 
     public var title: String {
         switch self {
-        case .system: return "跟随系统"
-        case .light: return "浅色"
-        case .dark: return "深色"
+        case .system: return "システムに合わせる"
+        case .light: return "ライト"
+        case .dark: return "ダーク"
         }
     }
 
@@ -36,19 +36,19 @@ public enum MapSource: String, CaseIterable, Codable, Identifiable, Sendable {
 
     public var title: String {
         switch self {
-        case .appleNative: return "Apple 地图（系统默认）"
-        case .globalStreet: return "全球街道图（Esri · WGS-84）"
-        case .globalOSM: return "OpenStreetMap（开源 · WGS-84）"
-        case .globalSatellite: return "全球卫星图（Esri · WGS-84）"
+        case .appleNative: return "Appleマップ（システムのデフォルト）"
+        case .globalStreet: return "世界街道図（Esri · WGS-84）"
+        case .globalOSM: return "OpenStreetMap（オープンソース · WGS-84）"
+        case .globalSatellite: return "世界衛星図（Esri · WGS-84）"
         }
     }
 
     public var shortTitle: String {
         switch self {
-        case .appleNative: return "Apple 地图"
-        case .globalStreet: return "全球街道"
-        case .globalOSM: return "OSM 地图"
-        case .globalSatellite: return "全球卫星"
+        case .appleNative: return "Appleマップ"
+        case .globalStreet: return "世界街道"
+        case .globalOSM: return "OSMマップ"
+        case .globalSatellite: return "世界衛星"
         }
     }
 
@@ -67,9 +67,9 @@ public enum MapDisplayStyle: String, CaseIterable, Codable, Identifiable, Sendab
 
     public var title: String {
         switch self {
-        case .standard: return "标准"
-        case .satellite: return "卫星"
-        case .hybrid: return "混合"
+        case .standard: return "標準"
+        case .satellite: return "衛星"
+        case .hybrid: return "ハイブリッド"
         }
     }
 }
@@ -180,7 +180,7 @@ public enum PairingImportError: LocalizedError {
     public var errorDescription: String? {
         switch self {
         case .oversized:
-            return "配对文件体积异常。"
+            return "ペアリングファイルのサイズが不正です。"
         case .invalidFormat(let detail):
             return detail
         }
@@ -341,8 +341,8 @@ public final class CredentialStore {
               let decoded = try? JSONDecoder().decode([FavoriteLocation].self, from: data) else {
             return [
                 FavoriteLocation(name: "Apple Park", subtitle: "Cupertino, CA", latitude: 37.334606, longitude: -122.009102, altitude: 20.0),
-                FavoriteLocation(name: "东京站", subtitle: "日本东京都千代田区", latitude: 35.681236, longitude: 139.767125, altitude: 10.0),
-                FavoriteLocation(name: "台北 101", subtitle: "台北市信义区", latitude: 25.033964, longitude: 121.564468, altitude: 12.0),
+                FavoriteLocation(name: "東京駅", subtitle: "東京都千代田区", latitude: 35.681236, longitude: 139.767125, altitude: 10.0),
+                FavoriteLocation(name: "台北101", subtitle: "台北市信義区", latitude: 25.033964, longitude: 121.564468, altitude: 12.0),
             ]
         }
         return decoded
@@ -391,7 +391,7 @@ public final class CredentialStore {
             throw PairingImportError.oversized
         }
         guard let dict = try PropertyListSerialization.propertyList(from: raw, format: nil) as? [String: Any] else {
-            throw PairingImportError.invalidFormat("配对文件必须是有效的 plist 格式。")
+            throw PairingImportError.invalidFormat("ペアリングファイルは有効なplist形式である必要があります。")
         }
         let xml = try PropertyListSerialization.data(fromPropertyList: dict, format: .xml, options: 0)
 
@@ -401,7 +401,7 @@ public final class CredentialStore {
            !identifier.isEmpty {
             guard let key = try? Curve25519.Signing.PrivateKey(rawRepresentation: privateKey),
                   key.publicKey.rawRepresentation == publicKey else {
-                throw PairingImportError.invalidFormat("Remote Pairing 配对文件中的 Ed25519 公私钥不匹配。")
+                throw PairingImportError.invalidFormat("Remote Pairing ペアリングファイルの Ed25519 公開鍵と秘密鍵が一致しません。")
             }
             return (xml, .remotePairing(data: xml, identifier: identifier))
         }
@@ -416,7 +416,7 @@ public final class CredentialStore {
         defer { if accessed { url.stopAccessingSecurityScopedResource() } }
 
         if url.hasDirectoryPath || ((try? url.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) == true) {
-            throw PairingImportError.invalidFormat("请选择具体的配对文件，而不是文件夹。")
+            throw PairingImportError.invalidFormat("フォルダではなく、ペアリングファイル自体を選択してください。")
         }
 
         let data: Data
@@ -451,7 +451,7 @@ public final class CredentialStore {
     @discardableResult
     public func saveOnDevicePairedIdentity(_ rawRecord: Data, hostIRK: Data, udid: String) throws -> SavedPairing {
         guard hostIRK.count == 16 else {
-            throw PairingImportError.invalidFormat("配对主机身份无效。")
+            throw PairingImportError.invalidFormat("ペアリングホストの識別情報が無効です。")
         }
         var dict = (try PropertyListSerialization.propertyList(from: rawRecord, format: nil) as? [String: Any]) ?? [:]
         dict["reloc_host_irk"] = hostIRK

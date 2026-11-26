@@ -3,7 +3,7 @@ import SwiftUI
 import UIKit
 
 /// Pure UIKit Web Mercator (EPSG:3857) tile map view for WGS-84 global tile sources.
-/// Completely independent of `MKMapView` so Apple China GeoServices / AutoNavi ("高德地图")
+/// Completely independent of `MKMapView` so Apple China GeoServices / AutoNavi ("高徳地図")
 /// logos and GCJ-02 shifts never appear.
 struct WebMercatorMapView: UIViewRepresentable {
     let activeCoordinate: CLLocationCoordinate2D

@@ -18,6 +18,10 @@ public final class BackgroundKeepAlive: NSObject, CLLocationManagerDelegate {
     private var observersInstalled = false
     private var hasRequestedAlwaysUpgrade = false
     private var lastAuthStatus: CLAuthorizationStatus?
+    /// Set when Location Services becomes denied/restricted; consumed by a real OFF→ON refresh.
+    private var locationServicesWereDisabled = false
+    private var lastForceRefreshAt: Date?
+    private let forceRefreshCooldown: TimeInterval = 2.0
     public var onDiagnostic: ((String, [String: Any]) -> Void)?
 
     public override init() {
@@ -117,16 +121,36 @@ public final class BackgroundKeepAlive: NSObject, CLLocationManagerDelegate {
         endBackgroundTask()
     }
 
-    /// Call after global Location Services is toggled OFF -> ON (e.g. 0xFFFC -> 0xFFFA),
-    /// because turning Location Services off invalidates the previous CLBackgroundActivitySession.
+    /// Call after global Location Services is toggled OFF -> ON, because that invalidates
+    /// the previous CLBackgroundActivitySession. Must not be used for a routine 0xFFFC→0xFFFA
+    /// (including pulses from auto_lock_nudge), or forceRestart retriggers 0xFFFC and self-oscillates.
     public func refreshAfterLocationToggle() {
         guard isActive else { return }
+        let now = Date()
+        if let last = lastForceRefreshAt, now.timeIntervalSince(last) < forceRefreshCooldown {
+            return
+        }
+        lastForceRefreshAt = now
+        locationServicesWereDisabled = false
         renewBackgroundTask()
         startBackgroundLocation(forceRestart: true)
         if wantSilentAudio {
             startResilientAudioKeepAlive()
         }
         emitStatus("keepalive_refreshed")
+    }
+
+    /// A 0xFFFA arrived after a 0xFFFC. Only force-restart CoreLocation when Location Services
+    /// actually returned from denied/restricted; otherwise just renew the background task.
+    public func noteLocationSubscriptionResumed() {
+        guard isActive, locationSubscriptionActive else { return }
+        let status = locationManager.authorizationStatus
+        let authorized = status == .authorizedAlways || status == .authorizedWhenInUse
+        if locationServicesWereDisabled && authorized {
+            refreshAfterLocationToggle()
+            return
+        }
+        renewBackgroundTask()
     }
 
     // MARK: - Background Location Keep-Alive
@@ -325,13 +349,17 @@ public final class BackgroundKeepAlive: NSObject, CLLocationManagerDelegate {
         Task { @MainActor in
             guard self.isActive else { return }
             let newStatus = manager.authorizationStatus
+            if newStatus == .denied || newStatus == .restricted {
+                self.locationServicesWereDisabled = true
+            }
             let recovered = (self.lastAuthStatus == .denied || self.lastAuthStatus == .restricted)
                 && (newStatus == .authorizedAlways || newStatus == .authorizedWhenInUse)
             self.lastAuthStatus = newStatus
             if recovered {
                 self.refreshAfterLocationToggle()
             } else if self.locationSubscriptionActive {
-                self.startBackgroundLocation()
+                // Do not forceRestart here — a routine auth callback must not stop CoreLocation.
+                self.startBackgroundLocation(forceRestart: false)
             }
         }
     }

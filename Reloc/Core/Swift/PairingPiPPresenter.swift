@@ -23,8 +23,8 @@ final class PairingPiPPresenter: NSObject, ObservableObject {
     private var dismissTimer: Timer?
 
     private var stepIndex: Int = 1
-    private var headline: String = "准备设备配对…"
-    private var subtitle: String = "请保持本机网络回环已开启"
+    private var headline: String = "デバイスのペアリングを準備しています…"
+    private var subtitle: String = "このiPhoneのネットワークループバックをオンにしたままにしてください"
     private var pin: String?
     private var countdownSeconds: Int?
     private var mode: Mode = .pairing
@@ -55,8 +55,8 @@ final class PairingPiPPresenter: NSObject, ObservableObject {
         self.mode = .pairing
         self.deadline = deadline
         self.stepIndex = 1
-        self.headline = "准备本机配对服务…"
-        self.subtitle = "正在启动 Bonjour 配对广播"
+        self.headline = "このiPhoneのペアリングサービスを準備しています…"
+        self.subtitle = "Bonjour のペアリング広告を開始しています"
         self.pin = nil
         self.countdownSeconds = nil
         self.outcome = .inProgress
@@ -88,8 +88,8 @@ final class PairingPiPPresenter: NSObject, ObservableObject {
         self.mode = .locationRefresh
         self.deadline = Date().addingTimeInterval(180)
         self.stepIndex = 1
-        self.headline = "① 关闭系统「定位服务」"
-        self.subtitle = "关闭后将自动开始 5 秒倒计时，无需手动计时"
+        self.headline = "① システムの「位置情報サービス」をオフにする"
+        self.subtitle = "オフにすると5秒のカウントダウンが自動で始まります。手動で計る必要はありません"
         self.pin = nil
         self.countdownSeconds = nil
         self.outcome = .inProgress
@@ -133,7 +133,7 @@ final class PairingPiPPresenter: NSObject, ObservableObject {
         self.mode = .locationRefresh
         self.outcome = succeeded ? .succeeded : .failed
         self.stepIndex = succeeded ? 3 : self.stepIndex
-        self.headline = headline ?? (succeeded ? "外设定位已 100% 生效" : "定位刷新已取消")
+        self.headline = headline ?? (succeeded ? "外部GPSが完全に有効になりました" : "位置情報の更新をキャンセルしました")
         self.subtitle = message
         self.pin = nil
         self.countdownSeconds = nil
@@ -160,7 +160,7 @@ final class PairingPiPPresenter: NSObject, ObservableObject {
     func finish(succeeded: Bool, message: String) {
         self.outcome = succeeded ? .succeeded : .failed
         self.stepIndex = succeeded ? 3 : self.stepIndex
-        self.headline = succeeded ? "配对成功 · 记录已保存" : "配对未完成"
+        self.headline = succeeded ? "ペアリング成功 · 記録を保存しました" : "ペアリング未完了"
         self.subtitle = message
         self.pin = nil
         self.wantsAutoStart = false
@@ -408,11 +408,11 @@ final class PairingPiPPresenter: NSObject, ObservableObject {
         accentColor.setFill()
         UIRectFill(CGRect(x: 0, y: 0, width: rect.width, height: 6))
 
-        // Header badge: "Reloc · 设备配对"
+        // Header badge: "Reloc · デバイスペアリング"
         let dotRect = CGRect(x: 24, y: 26, width: 12, height: 12)
         UIBezierPath(ovalIn: dotRect).fill()
 
-        let headerText = (mode == .locationRefresh ? "Reloc · 一键触发定位" : "Reloc · 设备配对指引") as NSString
+        let headerText = (mode == .locationRefresh ? "Reloc · ワンタップで位置情報を更新" : "Reloc · ペアリングガイド") as NSString
         headerText.draw(
             at: CGPoint(x: 46, y: 20),
             withAttributes: [
@@ -425,10 +425,10 @@ final class PairingPiPPresenter: NSObject, ObservableObject {
         if outcome == .inProgress {
             let statusBadge: NSString
             if mode == .locationRefresh {
-                statusBadge = String(format: "步骤 %d/3 · 实时监测", stepIndex) as NSString
+                statusBadge = String(format: "ステップ %d/3 · リアルタイム監視", stepIndex) as NSString
             } else {
                 let remaining = max(0, Int(deadline.timeIntervalSinceNow.rounded()))
-                statusBadge = String(format: "%02d:%02d  步骤 %d/3", remaining / 60, remaining % 60, stepIndex) as NSString
+                statusBadge = String(format: "%02d:%02d  ステップ %d/3", remaining / 60, remaining % 60, stepIndex) as NSString
             }
             let size = statusBadge.size(withAttributes: [
                 .font: UIFont.monospacedDigitSystemFont(ofSize: 19, weight: .semibold),
@@ -459,7 +459,7 @@ final class PairingPiPPresenter: NSObject, ObservableObject {
                 withAttributes: pinAttrs
             )
 
-            let hint = "请在「系统设置」弹窗中输入以上 6 位配对码" as NSString
+            let hint = "「設定」のダイアログに、上の6桁のペアリングコードを入力してください" as NSString
             let hintAttrs: [NSAttributedString.Key: Any] = [
                 .font: UIFont.systemFont(ofSize: 21, weight: .medium),
                 .foregroundColor: UIColor.white.withAlphaComponent(0.78),
@@ -470,7 +470,7 @@ final class PairingPiPPresenter: NSObject, ObservableObject {
                 withAttributes: hintAttrs
             )
         } else if mode == .locationRefresh, let secs = countdownSeconds {
-            let text = (secs > 0 ? "\(secs) 秒" : "现在重新打开！") as NSString
+            let text = (secs > 0 ? "\(secs) 秒" : "今すぐもう一度オンにしてください") as NSString
             let bigAttrs: [NSAttributedString.Key: Any] = [
                 .font: UIFont.monospacedDigitSystemFont(ofSize: secs > 0 ? 68 : 48, weight: .bold),
                 .foregroundColor: secs > 0

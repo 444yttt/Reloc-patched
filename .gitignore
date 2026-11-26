@@ -47,3 +47,6 @@ Reloc/Resources/MFi/*
 *.mobiledevicepairing
 *.keychain
 *.keychain-db
+
+# Local zsign output (never commit)
+.zsign_cache/

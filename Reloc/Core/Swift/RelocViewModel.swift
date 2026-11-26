@@ -91,9 +91,9 @@ public final class RelocViewModel: ObservableObject {
             pushLocationToSession()
         }
     }
-    /// Candidate pin dropped on the map while a session is already active (allows browsing before tapping "更新到此位置").
+    /// Candidate pin dropped on the map while a session is already active (allows browsing before tapping "この位置に更新").
     @Published public var pendingLocation: TargetLocation?
-    @Published public var selectedPlaceName: String = "选中位置"
+    @Published public var selectedPlaceName: String = "選択中の位置"
     @Published public var selectedPlaceAddress: String = ""
 
     // MARK: - Favorites, Recents (30), & Recovery
@@ -107,7 +107,7 @@ public final class RelocViewModel: ObservableObject {
     @Published public var connectionVerified = false
     @Published public var isVerifyingConnection = false
     @Published public var connectionCheckFailed = false
-    @Published public var deviceConnectionStatus = "请先配对这台 iPhone"
+    @Published public var deviceConnectionStatus = "先にこのiPhoneをペアリングしてください"
     @Published public var discoveredDevicePort: UInt16?
 
     // MARK: - Session & Diagnostics
@@ -169,8 +169,8 @@ public final class RelocViewModel: ObservableObject {
         self.savedPairing = pairing
         self.pairingStatus = pairStat
         self.deviceConnectionStatus = UIDevice.current.userInterfaceIdiom == .pad
-            ? "不支持 iPad（仅支持 iPhone）"
-            : (pairStat.isLoaded ? "配对记录已保存，等待连接验证" : "请先配对这台 iPhone")
+            ? "iPadには非対応です（iPhoneのみ）"
+            : (pairStat.isLoaded ? "ペアリング記録を保存しました。接続の確認を待っています" : "先にこのiPhoneをペアリングしてください")
 
         self.keepAlive.onDiagnostic = { [weak self] event, details in
             guard let self else { return }
@@ -276,7 +276,7 @@ public final class RelocViewModel: ObservableObject {
 
     public func selectWGSLocation(_ wgsLoc: TargetLocation, name: String? = nil, address: String? = nil) {
         if snapshot.isRunning {
-            // Keep active reported location unchanged until user taps "更新到此位置".
+            // Keep active reported location unchanged until user taps "この位置に更新".
             pendingLocation = wgsLoc
         } else {
             pendingLocation = nil
@@ -288,7 +288,7 @@ public final class RelocViewModel: ObservableObject {
             selectedPlaceAddress = address ?? String(format: "%.5f, %.5f", wgsLoc.latitude, wgsLoc.longitude)
         } else {
             selectedPlaceName = String(format: "%.5f, %.5f", wgsLoc.latitude, wgsLoc.longitude)
-            selectedPlaceAddress = "正在解析地名…"
+            selectedPlaceAddress = "地名を検索しています…"
             reverseGeocode(wgsLocation: wgsLoc)
         }
     }
@@ -351,9 +351,9 @@ public final class RelocViewModel: ObservableObject {
             }
             guard !Task.isCancelled, self.geocodeGeneration == gen else { return }
 
-            // 4. Final fallback: never leave "正在解析地名…" stuck on screen.
+            // 4. Final fallback: never leave "地名を検索しています…" stuck on screen.
             self.selectedPlaceName = coordText
-            self.selectedPlaceAddress = "WGS-84 坐标"
+            self.selectedPlaceAddress = "WGS-84 座標"
         }
     }
 
@@ -555,7 +555,7 @@ public final class RelocViewModel: ObservableObject {
     }
 
     public static let unsupportedIPadMessage =
-        "当前设备为 iPad。由于 iPadOS 不提供 CarPlay / CarKit（com.apple.carkit.service）外设定位服务，Reloc 仅支持 iPhone 使用。"
+        "このデバイスはiPadです。iPadOSには CarPlay / CarKit（com.apple.carkit.service）の外部位置情報サービスがないため、Reloc は iPhone のみ対応です。"
 
     // MARK: - Device Pairing & Loopback Verification
 
@@ -567,7 +567,7 @@ public final class RelocViewModel: ObservableObject {
         connectionVerified = false
         discoveredDevicePort = nil
         connectionCheckFailed = false
-        deviceConnectionStatus = pairingStatus.isLoaded ? "配对记录已保存，等待连接验证" : "请先配对这台 iPhone"
+        deviceConnectionStatus = pairingStatus.isLoaded ? "ペアリング記録を保存しました。接続の確認を待っています" : "先にこのiPhoneをペアリングしてください"
     }
 
     public func startDevicePairing() {
@@ -607,7 +607,7 @@ public final class RelocViewModel: ObservableObject {
 
     public func testConnection(silent: Bool = false) {
         if isUnsupportedIPad {
-            deviceConnectionStatus = "不支持 iPad（仅支持 iPhone）"
+            deviceConnectionStatus = "iPadには非対応です（iPhoneのみ）"
             if !silent {
                 alertMessage = Self.unsupportedIPadMessage
             }
@@ -615,7 +615,7 @@ public final class RelocViewModel: ObservableObject {
         }
         guard !isVerifyingConnection, !snapshot.isRunning else { return }
         guard let pairing = savedPairing else {
-            deviceConnectionStatus = "请先配对这台 iPhone 或导入配对文件"
+            deviceConnectionStatus = "先にこのiPhoneをペアリングするか、ペアリングファイルを読み込んでください"
             return
         }
 
@@ -626,7 +626,7 @@ public final class RelocViewModel: ObservableObject {
         isVerifyingConnection = true
         connectionVerified = false
         connectionCheckFailed = false
-        deviceConnectionStatus = "正在发现服务并验证配对身份…"
+        deviceConnectionStatus = "サービスを検出してペアリング情報を確認しています…"
 
         Task {
             defer { isVerifyingConnection = false }
@@ -649,7 +649,7 @@ public final class RelocViewModel: ObservableObject {
                 }
                 self.discoveredDevicePort = result.port
                 self.connectionVerified = true
-                self.deviceConnectionStatus = "设备身份与回环连接已验证"
+                self.deviceConnectionStatus = "デバイス識別情報とループバック接続を確認しました"
                 self.events.append(ProtocolEvent(
                     name: "connection_verified",
                     detail: "{\"event\":\"connection_verified\",\"port\":\(result.port),\"service\":\"\(result.carkitService ?? "lockdown")\"}"
@@ -679,11 +679,11 @@ public final class RelocViewModel: ObservableObject {
         }
         guard !snapshot.isRunning else { return }
         guard let pairing = savedPairing else {
-            alertMessage = "请先在「设备连接」页面完成本机配对或导入配对文件，并确保外部代理已启用 10.7.0.1 回环映射。"
+            alertMessage = "先に「デバイス接続」でこのiPhoneのペアリングかファイルの読み込みを済ませ、外部プロキシで 10.7.0.1 のループバックが有効か確認してください。"
             return
         }
         guard let mfiSigner else {
-            alertMessage = "内置配件认证组件不可用，请重新安装应用。"
+            alertMessage = "内蔵のアクセサリ認証コンポーネントを使えません。アプリを再インストールしてください。"
             return
         }
 
@@ -747,7 +747,7 @@ public final class RelocViewModel: ObservableObject {
                         self.injectionPhase = .idle
                         if self.isLocationRefreshGuideActive {
                             self.isLocationRefreshGuideActive = false
-                            PairingPiPPresenter.shared.finishLocationRefresh(succeeded: false, message: "定位会话已停止")
+                            PairingPiPPresenter.shared.finishLocationRefresh(succeeded: false, message: "位置情報セッションを停止しました")
                         }
                     }
                 }
@@ -769,7 +769,9 @@ public final class RelocViewModel: ObservableObject {
             },
             onSubscriptionRestarted: { [weak self] in
                 Task { @MainActor in
-                    self?.keepAlive.refreshAfterLocationToggle()
+                    // A 0xFFFA after 0xFFFC is often caused by our own CoreLocation pulse.
+                    // Only rebuild the CL session when Location Services really returned from OFF.
+                    self?.keepAlive.noteLocationSubscriptionResumed()
                 }
             }
         )
@@ -871,8 +873,8 @@ public final class RelocViewModel: ObservableObject {
                 refreshCountdownTask = nil
                 PairingPiPPresenter.shared.updateLocationRefresh(
                     step: 3,
-                    headline: "③ 系统已重新打开定位服务",
-                    subtitle: "正在极速锁定外设 GPS，请稍候 1–2 秒…"
+                    headline: "③ 位置情報サービスが再びオンになりました",
+                    subtitle: "外部GPSをすばやくロックしています。1〜2秒お待ちください…"
                 )
             }
             return
@@ -889,8 +891,8 @@ public final class RelocViewModel: ObservableObject {
             refreshCountdownTask = nil
             PairingPiPPresenter.shared.updateLocationRefresh(
                 step: 3,
-                headline: "③ 正在重新获取本机真实定位…",
-                subtitle: "已重新打开定位服务，请稍候 1–2 秒"
+                headline: "③ このiPhone本来の位置情報を再取得しています…",
+                subtitle: "位置情報サービスを再びオンにしました。1〜2秒お待ちください"
             )
             coreLocation.requestAndStart()
             coreLocation.pulseForAccessoryLock()
@@ -908,8 +910,8 @@ public final class RelocViewModel: ObservableObject {
         PairingPiPPresenter.shared.startLocationRefreshGuide()
         PairingPiPPresenter.shared.updateLocationRefresh(
             step: 1,
-            headline: "① 关闭系统「定位服务」",
-            subtitle: "清空外设残留缓存，关闭后自动开始 5 秒倒计时"
+            headline: "① システムの「位置情報サービス」をオフにする",
+            subtitle: "外部GPSの残留キャッシュを消します。オフにすると5秒のカウントダウンが始まります"
         )
         // Let PiP enter smoothly before switching apps to Settings (avoids transition stutter).
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.45) { [weak self] in
@@ -925,8 +927,8 @@ public final class RelocViewModel: ObservableObject {
                 guard !Task.isCancelled, let self, self.isRestoreRefreshGuideActive else { return }
                 PairingPiPPresenter.shared.updateLocationRefresh(
                     step: 2,
-                    headline: "② 正在清空外设残留缓存",
-                    subtitle: "请保持「定位服务」关闭，等待倒计时结束",
+                    headline: "② 外部GPSの残留キャッシュを消去しています",
+                    subtitle: "「位置情報サービス」はオフのまま、カウントダウンが終わるまで待ってください",
                     countdown: remaining
                 )
                 try? await Task.sleep(nanoseconds: 1_000_000_000)
@@ -935,8 +937,8 @@ public final class RelocViewModel: ObservableObject {
             RelocTheme.hapticMedium()
             PairingPiPPresenter.shared.updateLocationRefresh(
                 step: 3,
-                headline: "③ 请重新打开「定位服务」",
-                subtitle: "打开开关后将立即切回本机真实 GPS",
+                headline: "③ 「位置情報サービス」を再度オンにしてください",
+                subtitle: "スイッチをオンにすると、すぐにこのiPhone本来のGPSへ切り替わります",
                 countdown: 0
             )
         }
@@ -1004,8 +1006,8 @@ public final class RelocViewModel: ObservableObject {
                 refreshCountdownTask = nil
                 PairingPiPPresenter.shared.updateLocationRefresh(
                     step: 3,
-                    headline: "③ 系统已重新订阅外设 GPS",
-                    subtitle: "正在极速锁定目标坐标，请稍候 1–2 秒…"
+                    headline: "③ システムが外部GPSの購読を再開しました",
+                    subtitle: "目標座標をすばやくロックしています。1〜2秒お待ちください…"
                 )
             }
             // Do not schedule CoreLocation pulses while the PiP refresh guide is active.
@@ -1115,8 +1117,8 @@ public final class RelocViewModel: ObservableObject {
                     refreshCountdownTask = nil
                     PairingPiPPresenter.shared.finishLocationRefresh(
                         succeeded: true,
-                        message: "已切回本机真实 GPS，可返回任意 App 使用",
-                        headline: "本机真实定位已恢复"
+                        message: "このiPhone本来のGPSに戻りました。ほかのアプリに戻って使えます",
+                        headline: "本来の位置情報を復元しました"
                     )
                 }
                 Task { @MainActor [weak self] in
@@ -1159,7 +1161,7 @@ public final class RelocViewModel: ObservableObject {
                     refreshCountdownTask = nil
                     PairingPiPPresenter.shared.finishLocationRefresh(
                         succeeded: true,
-                        message: "已锁定「\(selectedPlaceName)」，可返回任意 App 使用"
+                        message: "「\(selectedPlaceName)」をロックしました。ほかのアプリに戻って使えます"
                     )
                 }
             }
@@ -1220,8 +1222,8 @@ public final class RelocViewModel: ObservableObject {
                 guard !Task.isCancelled, let self, self.isLocationRefreshGuideActive else { return }
                 PairingPiPPresenter.shared.updateLocationRefresh(
                     step: 2,
-                    headline: "② 正在清空系统定位缓存",
-                    subtitle: "请保持「定位服务」关闭，等待倒计时结束",
+                    headline: "② システムの位置情報キャッシュを消去しています",
+                    subtitle: "「位置情報サービス」はオフのまま、カウントダウンが終わるまで待ってください",
                     countdown: remaining
                 )
                 try? await Task.sleep(nanoseconds: 1_000_000_000)
@@ -1230,8 +1232,8 @@ public final class RelocViewModel: ObservableObject {
             RelocTheme.hapticMedium()
             PairingPiPPresenter.shared.updateLocationRefresh(
                 step: 3,
-                headline: "③ 请重新打开「定位服务」",
-                subtitle: "打开开关后 Reloc 将自动 100% 锁定外设 GPS",
+                headline: "③ 「位置情報サービス」を再度オンにしてください",
+                subtitle: "スイッチをオンにすると、Reloc が外部GPSを確実にロックします",
                 countdown: 0
             )
         }
@@ -1280,7 +1282,7 @@ public final class RelocViewModel: ObservableObject {
             events.append(ProtocolEvent(name: "pairing_imported", detail: "{\"event\":\"pairing_imported\"}"))
             testConnection(silent: true)
         } catch {
-            alertMessage = "配对文件导入失败：\(error.localizedDescription)"
+            alertMessage = "ペアリングファイルの読み込みに失敗しました：\(error.localizedDescription)"
         }
     }
 
